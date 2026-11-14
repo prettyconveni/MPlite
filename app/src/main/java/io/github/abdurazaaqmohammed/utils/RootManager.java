@@ -246,34 +246,21 @@ public class RootManager {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             while (true) {
                 try {
-                    if (process.exitValue() != 0) {
-                        java.io.InputStream es = process.getErrorStream();
-                        byte[] eb = new byte[512];
-                        int en = 0;
-                        try { en = es.read(eb); } catch (Exception ignored) {}
-                        android.util.Log.w("RootManager", "checkRoot su exit=" + process.exitValue()
-                                + " stderr=" + (en > 0 ? new String(eb, 0, en) : ""));
-                        return false;
-                    }
+                    if (process.exitValue() != 0) return false;
                     break;
                 } catch (IllegalThreadStateException running) {
-                    if (System.nanoTime() >= deadline) {
-                        android.util.Log.w("RootManager", "checkRoot su timeout");
-                        return false;
-                    }
+                    if (System.nanoTime() >= deadline) return false;
                     Thread.sleep(25);
                 }
             }
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line = reader.readLine();
-                android.util.Log.d("RootManager", "checkRoot su id -> exit=" + process.exitValue() + " line=" + line);
                 return line != null && line.contains("uid=0");
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
         } catch (Exception e) {
-            android.util.Log.w("RootManager", "checkRoot failed", e);
             return false;
         } finally {
             if (process != null) process.destroy();
@@ -488,17 +475,22 @@ public class RootManager {
         return "'" + s.replace("'", "'\\''") + "'";
     }
 
-    private String[] suCommandForFs(String shellCommand) {
+    public static String[] suCommandForFs(Context context, String shellCommand) {
         boolean global = false;
         try {
-            global = prefersGlobalNs();
+            global = getInstance(context).prefersGlobalNs();
         } catch (Exception ignored) {
         }
+        String su = getInstance(context).suBinary();
         if (global) {
-            return new String[]{suBinary(), "-c",
+            return new String[]{su, "-c",
                     "nsenter --mount=/proc/1/ns/mnt -- /system/bin/sh -c " + quoteForSh(shellCommand)};
         }
-        return new String[]{suBinary(), "-c", shellCommand};
+        return new String[]{su, "-c", shellCommand};
+    }
+
+    private String[] suCommandForFs(String shellCommand) {
+        return suCommandForFs(context, shellCommand);
     }
 
     public ShellResult executeGlobalNs(String command, int timeoutSeconds) {
@@ -806,6 +798,11 @@ public class RootManager {
         if (isPathBlocked(path)) {
             throw new IOException("Blocked: refusing to delete critical path: " + path);
         }
+        File file = new File(path);
+        if (SharedStorageCompat.canDeleteThroughApp(file) && FileUtils.deleteTree(file, null)) {
+            invalidateListCache();
+            return;
+        }
         // The FUSE view of /storage/emulated is frequently unwritable (or not
         // even mounted) for the su shell, while the raw backing directory
         // /data/media/X is - stat/chmod already go through the alias for the
@@ -828,6 +825,11 @@ public class RootManager {
         }
         if (isPathBlocked(path)) {
             throw new IOException("Blocked: refusing to delete critical path: " + path);
+        }
+        File file = new File(path);
+        if (SharedStorageCompat.canDeleteThroughApp(file) && file.delete()) {
+            invalidateListCache();
+            return;
         }
         String target = emulatedAlias(path);
         String failure = rmProbe("rm -f", target, 30);
@@ -919,15 +921,13 @@ public class RootManager {
     }
 
     public void copyDir(String src, String dest) throws IOException {
-        String cmd = "(mkdir -p " + escapeShellArg(dest) + " && (tar -c -C " + escapeShellArg(src) + " . | tar -x --no-same-owner --no-same-permissions -C " + escapeShellArg(dest) + ")) || cp -rf " + escapeShellArg(src) + " " + escapeShellArg(dest);
-        ShellResult result = executeFs(cmd, 120);
+        ShellResult result = executeFs("cp -rf " + escapeShellArg(src) + " " + escapeShellArg(dest), 120);
         if (!result.isSuccess()) throw new IOException("copy failed: " + result.error);
         invalidateListCache();
     }
 
     public void copyDirPreserving(String src, String dest) throws IOException {
-        String cmd = "(mkdir -p " + escapeShellArg(dest) + " && (tar -c -C " + escapeShellArg(src) + " . | tar -x --no-same-owner --no-same-permissions -C " + escapeShellArg(dest) + ")) || cp -rpf " + escapeShellArg(src) + " " + escapeShellArg(dest);
-        ShellResult result = executeFs(cmd, 120);
+        ShellResult result = executeFs("cp -rpf " + escapeShellArg(src) + " " + escapeShellArg(dest), 120);
         if (!result.isSuccess()) throw new IOException("copy failed: " + result.error);
         invalidateListCache();
     }
@@ -1136,6 +1136,14 @@ public class RootManager {
         }
         if (targets.isEmpty()) return targets;
 
+        List<String> allTargets = targets;
+        int[] sharedDone = {0};
+        targets = deleteSharedPaths(targets, progress, control, sharedDone, false);
+        if (targets.isEmpty()) {
+            invalidateListCache();
+            return allTargets;
+        }
+
         final int chunk = 32;
         final AtomicBoolean failed =
                 new AtomicBoolean(false);
@@ -1159,7 +1167,7 @@ public class RootManager {
             cmd.append(" ; rm -rf --");
             for (int j = i; j < end; j++) cmd.append(' ').append(escapeShellArg(targets.get(j)));
             cmd.append(ShellProgress.reportFailure());
-            done = end;
+            done = sharedDone[0] + end;
             cmd.append(ShellProgress.reportAlways(done, 0L));
         }
         ShellResult result = executeFs(cmd.toString(), Math.max(30, targets.size() * 30), relay, control);
@@ -1167,7 +1175,37 @@ public class RootManager {
             throw new IOException("delete failed: " + result.error);
         }
         invalidateListCache();
-        return targets;
+        return allTargets;
+    }
+
+    /** Leave public-storage deletions in the app's FUSE view; root-only paths stay native. */
+    private List<String> deleteSharedPaths(List<String> paths, ShellProgress.Listener progress,
+                                          TransferControl control, int[] done, boolean countDirs) {
+        List<String> remaining = new ArrayList<>();
+        FileUtils.TransferListener listener = new FileUtils.TransferListener() {
+            @Override public void onFile(File source, File destination) {
+                if (countDirs && source.isDirectory() && !FileUtils.isSymlink(source)) {
+                    if (progress != null) progress.onProgress(++done[0], 0L);
+                    else done[0]++;
+                }
+            }
+            @Override public void onBytes(long count) {
+            }
+            @Override public void checkpoint() {
+                if (control != null) control.checkpoint();
+            }
+        };
+        for (String path : paths) {
+            if (control != null) control.checkpoint();
+            File file = new File(path);
+            if (SharedStorageCompat.canDeleteThroughApp(file) && FileUtils.deleteTree(file, listener)) {
+                if (progress != null) progress.onProgress(++done[0], 0L);
+                else done[0]++;
+            } else {
+                remaining.add(path);
+            }
+        }
+        return remaining;
     }
 
     /**
@@ -1204,6 +1242,12 @@ public class RootManager {
         if (targets.isEmpty()) return targets;
 
         final int[] done = {0};
+        List<String> allTargets = targets;
+        targets = deleteSharedPaths(targets, progress, control, done, true);
+        if (targets.isEmpty()) {
+            invalidateListCache();
+            return allTargets;
+        }
         final AtomicBoolean failed =
                 new AtomicBoolean(false);
         ShellProgress.Listener relay = new ShellProgress.Listener() {
@@ -1240,7 +1284,7 @@ public class RootManager {
         ShellResult result = executeFs(cmd.toString(), Math.max(120, targets.size() * 60), relay, control);
         if (failed.get()) throw new IOException("delete failed: " + result.error);
         invalidateListCache();
-        return targets;
+        return allTargets;
     }
 
     /**

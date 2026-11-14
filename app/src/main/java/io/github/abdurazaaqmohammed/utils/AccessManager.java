@@ -526,7 +526,51 @@ public final class AccessManager {
         if (ops == null || ops.isEmpty()) return;
         Backend backend = active(context);
         if (backend == Backend.ROOT) {
-            RootManager.getInstance(context).copyAllPreserving(ops, progress, control);
+            // High-performance Native I/O Daemon (mpio) path:
+            int completedFiles = 0;
+            long completedBytes = 0L;
+            int completedOps = 0;
+            try {
+                for (RootManager.CopyOp op : ops) {
+                    if (control != null) control.checkpoint();
+                    final int baseFiles = completedFiles;
+                    final long baseBytes = completedBytes;
+                    final long[] itemDone = {0L, 0L};
+                    boolean success = NativeRootManager.copy(context, op.src, op.dest,
+                            (filesDone, bytesDone, currentItem) -> {
+                                itemDone[0] = filesDone;
+                                itemDone[1] = bytesDone;
+                                if (progress != null) {
+                                    progress.onProgress(baseFiles + (int) Math.min(Integer.MAX_VALUE, filesDone),
+                                            baseBytes + bytesDone);
+                                }
+                            }, control);
+                    if (!success) throw new NativeCopyException("Native copy did not complete: " + op.src);
+                    completedFiles += (int) Math.min(Integer.MAX_VALUE, itemDone[0]);
+                    completedBytes += itemDone[1];
+                    completedOps++;
+                }
+                return;
+            } catch (TransferCancelledException | NativeCopyException e) {
+                // An I/O failure is not a missing tool. Never hide it by copying
+                // the whole batch again (or letting a partial copy look complete).
+                throw e;
+            } catch (IOException unavailable) {
+                // Only extraction/process startup can fall back, and only for
+                // items not already copied successfully.
+                final int baseFiles = completedFiles;
+                final long baseBytes = completedBytes;
+                ShellProgress.Listener relay = progress == null ? null : new ShellProgress.Listener() {
+                    @Override public void onProgress(int filesDone, long bytesDone) {
+                        progress.onProgress(baseFiles + filesDone, baseBytes + bytesDone);
+                    }
+                    @Override public void onFailure() { progress.onFailure(); }
+                    @Override public void onPid(int pid) { progress.onPid(pid); }
+                };
+                RootManager.getInstance(context).copyAllPreserving(ops.subList(completedOps, ops.size()), relay, control);
+            } finally {
+                RootManager.getInstance(context).invalidateListCache();
+            }
             return;
         }
         if (backend == Backend.SHIZUKU) {
@@ -555,7 +599,13 @@ public final class AccessManager {
         if (paths == null || paths.isEmpty()) return null;
         Backend backend = active(context);
         try {
-            if (backend == Backend.ROOT) return RootManager.getInstance(context).measureSet(paths);
+            if (backend == Backend.ROOT) {
+                FileUtils.MeasureSet nativeSet = NativeRootManager.scan(context, paths);
+                if (nativeSet != null && nativeSet.total.files > 0) {
+                    return nativeSet;
+                }
+                return RootManager.getInstance(context).measureSet(paths);
+            }
             if (backend == Backend.SHIZUKU) return ShizukuManager.measureSet(context, paths);
         } catch (Exception ignored) {
         }
@@ -611,6 +661,30 @@ public final class AccessManager {
         if (useElevated) {
             Backend backend = active(context);
             if (backend == Backend.ROOT) {
+                boolean allNative = true;
+                try {
+                    for (String path : paths) {
+                        if (control != null && control.isCancelled()) throw new TransferCancelledException();
+                        boolean success = NativeRootManager.delete(context, path,
+                                (itemsDone, bytesDone, currentItem) -> {
+                                    if (progress != null) {
+                                        progress.onProgress((int) itemsDone, bytesDone);
+                                    }
+                                }, control);
+                        if (!success) {
+                            allNative = false;
+                            break;
+                        }
+                    }
+                    if (allNative) {
+                        RootManager.getInstance(context).invalidateListCache();
+                        return;
+                    }
+                } catch (TransferCancelledException tce) {
+                    throw tce;
+                } catch (Exception ignored) {
+                    // Fall back to shell deleteTree
+                }
                 RootManager.getInstance(context).deleteTree(paths, progress, control);
                 return;
             }
@@ -689,14 +763,6 @@ public final class AccessManager {
             if (kids != null) for (File k : kids) delete(context, k.getAbsolutePath(), false);
         }
         if (!f.delete() && f.exists()) throw new IOException("delete failed");
-        // A plain unlink can leave MediaProvider's row for the path in place,
-        // which blocks re-creating the same name (ENOENT). Drop the stale row
-        // and ask for a scan so the index matches the filesystem again.
-        if (!f.exists()) FileUtils.purgeStaleMediaRow(context, path);
-        try {
-            android.media.MediaScannerConnection.scanFile(context, new String[]{path}, null, null);
-        } catch (Exception ignored) {
-        }
     }
 
     public static void rename(Context context, String oldPath, String newPath, boolean useElevated) throws IOException {
@@ -727,7 +793,7 @@ public final class AccessManager {
             }
         }
         File f = new File(path);
-        if (!f.exists() && !f.createNewFile()) throw new IOException("touch failed");
+        if (!FileUtils.createNewFile(f) && !f.exists()) throw new IOException("touch failed");
     }
 
     public static RootManager.ShellResult execute(Context context, String command, int timeout) {
