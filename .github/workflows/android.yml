@@ -1,13 +1,18 @@
-# Build MP-Manager APK
-# Note: Offline project rules reside locally at /storage/emulated/0/Download/apks/Pref/Antigravity/project_rules.md
-# (These offline/CI configuration notes are strictly local to our test repo and must be excluded from any future upstream PR).
-# Always review project rules before any build unless already reviewed in the current session.
-# Rule 3 & 5: Builds are triggered strictly and manually via workflow_dispatch API.
-
-name: Build MP-Manager APK
+name: Build & Release MPlite APK
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag name (leave empty for auto v1.1.1-<run_number>)'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -21,38 +26,45 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
           cache: gradle
 
       - name: Grant execute permission
         run: chmod +x gradlew
 
-      - name: Patch incompatible Material attribute
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          old = "android.R.attr.colorPrimaryContainer"
-          new = "com.google.android.material.R.attr.colorPrimary"
-
-          count = 0
-          for path in Path(".").rglob("*.java"):
-              source = path.read_text()
-              updated = source.replace(old, new)
-              if updated != source:
-                  path.write_text(updated)
-                  count += source.count(old)
-                  print(f"Patched: {path}")
-
-          print(f"Total replacements: {count}")
-          PY
-
       - name: Build APK
-        run: ./gradlew assembleFullRelease
+        run: ./gradlew :app:assembleFullRelease
 
-      - name: Upload APK
+      - name: Prepare Release APK
+        id: prep
+        run: |
+          APK_SRC="app/build/outputs/apk/full/release/app-full-release.apk"
+          if [ ! -f "$APK_SRC" ]; then
+            APK_SRC=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
+          fi
+          cp "$APK_SRC" "MPlite-v1.1.1.apk"
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v1.1.1-${{ github.run_number }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MP-Manager-APK
-          path: app/build/outputs/apk/**/*.apk
+          name: MPlite-APK
+          path: MPlite-v1.1.1.apk
           if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prep.outputs.tag }}
+          name: MPlite ${{ steps.prep.outputs.tag }}
+          body: |
+            MPlite (`com.system.power`) 自动构建版本。
+          files: MPlite-v1.1.1.apk
+          make_latest: true
