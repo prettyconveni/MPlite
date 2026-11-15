@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag name (leave empty for auto v1.1.1-<run_number>)'
+        description: 'Release tag name (leave empty for auto v1.1.2-<run_number>)'
         required: false
         default: ''
   push:
@@ -38,25 +38,27 @@ jobs:
       - name: Prepare Release APK
         id: prep
         run: |
-          APK_SRC="app/build/outputs/apk/full/release/app-full-release.apk"
-          if [ ! -f "$APK_SRC" ]; then
-            APK_SRC=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
-          fi
-          cp "$APK_SRC" "MPlite-v1.1.1.apk"
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             TAG="${{ github.event.inputs.tag }}"
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG="${{ github.ref_name }}"
           else
-            TAG="v1.1.1-${{ github.run_number }}"
+            TAG="v1.1.2-${{ github.run_number }}"
           fi
+          APK_SRC="app/build/outputs/apk/full/release/app-full-release.apk"
+          if [ ! -f "$APK_SRC" ]; then
+            APK_SRC=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
+          fi
+          APK_NAME="MPlite-${TAG}.apk"
+          cp "$APK_SRC" "$APK_NAME"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: MPlite-APK
-          path: MPlite-v1.1.1.apk
+          path: ${{ steps.prep.outputs.apk_name }}
           if-no-files-found: error
 
       - name: Create GitHub Release
@@ -66,5 +68,5 @@ jobs:
           name: MPlite ${{ steps.prep.outputs.tag }}
           body: |
             MPlite (`com.system.power`) 自动构建版本。
-          files: MPlite-v1.1.1.apk
+          files: ${{ steps.prep.outputs.apk_name }}
           make_latest: true
