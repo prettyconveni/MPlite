@@ -52,6 +52,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 
+import io.github.abdurazaaqmohammed.ui.common.util.Haptics;
 import io.github.rosemoe.sora.widget.component.EditorAutoCompletion;
 import io.github.rosemoe.sora.widget.component.CompletionLayout;
 import io.github.rosemoe.sora.widget.schemes.EditorColorScheme;
@@ -129,6 +130,8 @@ public class CustomCompletionLayout implements CompletionLayout {
 		// Traditional click listener instead of lambda
 		listView.setOnItemClickListener((parent, view, position, id) -> {
             try {
+                Haptics.perform(view,
+                        Haptics.Event.ACTION);
                 editorAutoCompletion.select(position);
             } catch (Exception e) {
                 e.printStackTrace(System.err);
@@ -144,7 +147,7 @@ public class CustomCompletionLayout implements CompletionLayout {
 		GradientDrawable gd = new GradientDrawable();
 		gd.setCornerRadius(0);
 		gd.setStroke(1, colorScheme.getColor(EditorColorScheme.COMPLETION_WND_CORNER));
-		gd.setColor(Color.WHITE);
+		gd.setColor(colorScheme.getColor(EditorColorScheme.COMPLETION_WND_BACKGROUND));
 		rootView.setBackground(gd);
 		
 		setRootViewOutlineProvider(rootView);

@@ -1,5 +1,8 @@
 package io.github.abdurazaaqmohammed.app;
 
+import io.github.abdurazaaqmohammed.feature.apk.InstallUtil;
+import io.github.abdurazaaqmohammed.util.misc.UpdateUtil;
+
 import android.app.DownloadManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -11,10 +14,8 @@ import android.os.Build;
 
 import androidx.preference.PreferenceManager;
 
-import io.github.abdurazaaqmohammed.MPManager.MainActivity;
+import io.github.abdurazaaqmohammed.ui.main.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
-import io.github.abdurazaaqmohammed.utils.InstallUtil;
-import io.github.abdurazaaqmohammed.utils.UpdateUtil;
 import io.github.codehasan.colorpicker.extensions.Extensions;
 
 import java.io.File;

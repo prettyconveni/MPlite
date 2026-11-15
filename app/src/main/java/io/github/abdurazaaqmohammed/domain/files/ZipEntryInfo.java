@@ -1,14 +1,15 @@
 package io.github.abdurazaaqmohammed.domain.files;
 
+import io.github.abdurazaaqmohammed.util.archive.ArchiveBrowseUtil;
+
 import net.lingala.zip4j.model.FileHeader;
 
 import java.io.File;
 
-import io.github.abdurazaaqmohammed.utils.ArchiveBrowseUtil;
 
 /**
  * Value holder for one zip entry. Moved here from the adapters package;
- * {@code io.github.abdurazaaqmohammed.adapters.ZipEntryInfo} remains as a
+ * {@code io.github.abdurazaaqmohammed.ui.main.ZipEntryInfo} remains as a
  * deprecated subclass until its last usages migrate.
  */
 public class ZipEntryInfo {

@@ -1,10 +1,21 @@
 package io.github.abdurazaaqmohammed.domain.files;
 
+import android.content.Context;
+
+import io.github.abdurazaaqmohammed.feature.files.network.RemoteFile;
+import io.github.abdurazaaqmohammed.feature.ftp.FTPFileWrapper;
+import io.github.abdurazaaqmohammed.privilege.api.PrivilegeManager;
+
+import io.github.abdurazaaqmohammed.privilege.impl.NativeRootManager;
+
+import io.github.abdurazaaqmohammed.util.io.FileUtils;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -128,8 +139,8 @@ public final class FileSorting {
         if (needSizes) {
             List<File> dirsToSize = new ArrayList<>();
             for (int i = 0; i < n; i++) {
-                if (files[i] instanceof io.github.abdurazaaqmohammed.features.files.network.RemoteFile
-                        || files[i] instanceof io.github.abdurazaaqmohammed.MPManager.ftp.FTPFileWrapper) {
+                if (files[i] instanceof RemoteFile
+                        || files[i] instanceof FTPFileWrapper) {
                     sizes[i] = dirs[i] ? 0 : files[i].length(); // No recursive network walks or fake local-path stats.
                 } else if (dirs[i]) {
                     Long cached = DirSizeCache.peek(files[i]);
@@ -153,8 +164,8 @@ public final class FileSorting {
             }
             computeSizesParallel(dirsToSize);
             for (int i = 0; i < n; i++) {
-                if (dirs[i] && !(files[i] instanceof io.github.abdurazaaqmohammed.features.files.network.RemoteFile)
-                        && !(files[i] instanceof io.github.abdurazaaqmohammed.MPManager.ftp.FTPFileWrapper)) sizes[i] = dirSize(files[i]);
+                if (dirs[i] && !(files[i] instanceof RemoteFile)
+                        && !(files[i] instanceof FTPFileWrapper)) sizes[i] = dirSize(files[i]);
             }
             if (!dirsToSize.isEmpty()) DirSizeCache.scheduleSave();
         }
@@ -211,19 +222,29 @@ public final class FileSorting {
     /** Walks every uncached sibling folder in parallel so a size sort stays responsive. */
     private static void computeSizesParallel(List<File> dirs) {
         if (dirs == null || dirs.isEmpty()) return;
-        android.content.Context ctx = DirSizeCache.getContext();
+        Context ctx = DirSizeCache.getContext();
         // If folders are unreadable by regular app UID (e.g. /data/media/0 or system dirs),
         // try fast batch du via root/Shizuku first so the entire directory tree is measured in one shot.
         if (ctx != null) {
+            // Root mode: measure all sibling directories with one mpio process,
+            // including app-readable system folders, before any Java walk.
+            if (PrivilegeManager.Files.active(ctx)
+                    == PrivilegeManager.Backend.ROOT) {
+                List<String> paths = new ArrayList<>();
+                for (File d : dirs) if (d != null && !isVirtualOrSpecialFs(pathOf(d))) paths.add(pathOf(d));
+                Map<String, Long> nativeSizes = NativeRootManager.sizes(ctx, paths, 30_000);
+                DirSizeCache.recordBatch(nativeSizes);
+                DIR_SIZE_CACHE.putAll(nativeSizes);
+            }
             for (File d : dirs) {
-                if (d != null && !d.canRead()) {
+                if (d != null && !DIR_SIZE_CACHE.containsKey(pathOf(d)) && !d.canRead()) {
                     File parent = d.getParentFile();
                     if (parent != null) {
                         try {
-                            java.util.Map<String, Long> tree = io.github.abdurazaaqmohammed.utils.AccessManager.dirSizeTree(ctx, parent.getAbsolutePath());
+                            Map<String, Long> tree = PrivilegeManager.Files.dirSizeTree(ctx, parent.getAbsolutePath());
                             if (tree != null && !tree.isEmpty()) {
                                 DirSizeCache.recordBatch(tree);
-                                for (java.util.Map.Entry<String, Long> entry : tree.entrySet()) {
+                                for (Map.Entry<String, Long> entry : tree.entrySet()) {
                                     if (entry.getKey() != null && entry.getValue() != null) {
                                         DIR_SIZE_CACHE.put(entry.getKey(), entry.getValue());
                                     }
@@ -270,10 +291,10 @@ public final class FileSorting {
 
         // Check if unreadable by standard Java IO and query elevated AccessManager
         if (!dir.canRead()) {
-            android.content.Context ctx = DirSizeCache.getContext();
+            Context ctx = DirSizeCache.getContext();
             if (ctx != null) {
                 try {
-                    long du = io.github.abdurazaaqmohammed.utils.AccessManager.dirSize(ctx, key);
+                    long du = PrivilegeManager.Files.dirSize(ctx, key);
                     if (du >= 0) {
                         DIR_SIZE_CACHE.put(key, du);
                         DirSizeCache.record(dir, du);
@@ -286,11 +307,15 @@ public final class FileSorting {
 
         long total = 0;
         File[] children = dir.listFiles();
+        if (children == null) return -1;
         if (children != null) {
             for (File c : children) {
                 if (c == null) continue;
                 try {
-                    total += c.isDirectory() ? recursiveSize(c) : c.length();
+                    if (FileUtils.isSymlink(c)) continue;
+                    long size = c.isDirectory() ? recursiveSize(c) : c.length();
+                    if (size < 0) return -1;
+                    total += size;
                 } catch (Exception ignored) {
                 }
             }

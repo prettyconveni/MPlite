@@ -1,5 +1,7 @@
 package io.github.abdurazaaqmohammed.data.prefs;
 
+import io.github.abdurazaaqmohammed.util.text.AppGson;
+
 import android.content.Context;
 import android.os.Looper;
 
@@ -7,7 +9,6 @@ import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
 import com.google.gson.reflect.TypeToken;
 
-import io.github.abdurazaaqmohammed.utils.AppGson;
 
 import java.io.File;
 import java.io.FileReader;

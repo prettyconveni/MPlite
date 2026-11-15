@@ -18,8 +18,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import io.github.abdurazaaqmohammed.utils.nativelib.ElfParser;
-import io.github.abdurazaaqmohammed.utils.nativelib.InstructionDecoder;
+import io.github.abdurazaaqmohammed.feature.apk.nativelib.ElfParser;
+import io.github.abdurazaaqmohammed.feature.apk.nativelib.InstructionDecoder;
 
 /**
  * MCP native-library tools (MT Manager mt_apk_native_* parity): ELF

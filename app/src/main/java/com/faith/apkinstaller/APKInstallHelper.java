@@ -19,8 +19,8 @@ import java.io.OutputStream;
 import java.util.List;
 import java.util.UUID;
 
-import io.github.abdurazaaqmohammed.MPManager.MainActivity;
-import io.github.abdurazaaqmohammed.utils.FileUtils;
+import io.github.abdurazaaqmohammed.ui.main.MainActivity;
+import io.github.abdurazaaqmohammed.util.io.FileUtils;
 
 @TargetApi(21)
 public class APKInstallHelper {

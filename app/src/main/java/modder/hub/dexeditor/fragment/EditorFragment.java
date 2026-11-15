@@ -72,7 +72,7 @@ import java.lang.ref.WeakReference;
 import java.util.List;
 import java.util.Objects;
 
-import io.github.abdurazaaqmohammed.utils.CopyUtil;
+import io.github.abdurazaaqmohammed.util.io.CopyUtil;
 import io.github.codehasan.colorpicker.extensions.Extensions;
 import io.github.rosemoe.sora.event.ContentChangeEvent;
 import io.github.rosemoe.sora.event.SelectionChangeEvent;
@@ -472,9 +472,9 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
 
     private static String currentEditorThemeName(Context context) {
         try {
-            String pluginId = io.github.abdurazaaqmohammed.core.ui.theme.ThemeRegistry.getCurrentId(context);
+            String pluginId = io.github.abdurazaaqmohammed.ui.common.theme.ThemeRegistry.getCurrentId(context);
             if (pluginId != null) {
-                int nightMode = io.github.abdurazaaqmohammed.core.ui.theme.ThemeRegistry.modeFor(context, pluginId);
+                int nightMode = io.github.abdurazaaqmohammed.ui.common.theme.ThemeRegistry.modeFor(context, pluginId);
                 if (nightMode == AppCompatDelegate.MODE_NIGHT_YES) return "dark.json";
                 if (nightMode == AppCompatDelegate.MODE_NIGHT_NO) return "light.json";
             }

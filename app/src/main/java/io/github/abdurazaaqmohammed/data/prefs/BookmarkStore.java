@@ -1,5 +1,7 @@
 package io.github.abdurazaaqmohammed.data.prefs;
 
+import io.github.abdurazaaqmohammed.util.text.AppGson;
+
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.text.TextUtils;
@@ -9,7 +11,6 @@ import androidx.preference.PreferenceManager;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
-import io.github.abdurazaaqmohammed.utils.AppGson;
 
 import java.io.File;
 import java.util.ArrayList;
