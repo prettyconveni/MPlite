@@ -11,6 +11,7 @@ import android.net.Uri;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
 
@@ -28,6 +29,13 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -44,19 +52,46 @@ public class UpdateUtil {
     public static final String PREF_DOWNLOAD_ID = "downloadId";
     private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
 
-    /** Tag that names an app version: "1.0.9" or "v1.0.9". */
+    private static final String GITHUB_REPO = "prettyconveni/MPlite";
+    private static final String GITHUB_RELEASES_API = "https://api.github.com/repos/" + GITHUB_REPO + "/releases";
+    private static final String GITHUB_RELEASE_TAG_URL = "https://github.com/" + GITHUB_REPO + "/releases/tag/";
+    private static final int PROBE_TIMEOUT_MS = 3500;
+
+    /** Direct GitHub + mirror prefixes for release downloads and API fallback. */
+    private static final String[] DOWNLOAD_MIRRORS = new String[] {
+            "",
+            "https://gh-proxy.com/",
+            "https://ghfast.top/",
+            "https://mirror.ghproxy.com/",
+            "https://ghproxy.net/"
+    };
+
+    /** Tag that names an app version: "1.1.2" or "v1.1.2". */
     private static final Pattern VERSION_TAG =
             Pattern.compile("^v?(\\d+(?:\\.\\d+)*)$");
 
-    /** The app's own APK asset, e.g. MP-Manager.1.0.9.apk. */
-    private static final String APP_APK_PREFIX = "mp-manager.";
+    /** The app's own APK asset, e.g. MPlite-v1.1.2.apk. */
+    private static final String APP_APK_PREFIX = "mplite-";
 
-    /** An MP-Manager release: newest first, tag, APK asset and changelog. */
+    /** An MPlite release: newest first, tag, APK asset and changelog. */
     private static final class AppRelease {
+        String tagName;
         String version;
         String apkName;
         String apkUrl;
         String changelog;
+    }
+
+    private static final class RouteResult {
+        final String url;
+        final String label;
+        final long latencyMs;
+
+        RouteResult(String url, String label, long latencyMs) {
+            this.url = url;
+            this.label = label;
+            this.latencyMs = latencyMs;
+        }
     }
 
     public static void checkForUpdates(boolean toast, AppCompatActivity context) {
@@ -65,7 +100,7 @@ public class UpdateUtil {
         String lastVerChecked = prefs.getString(PREF_LAST_VER_CHECKED, null);
         new Thread(() -> {
             try {
-                String json = read(getHttpURLConnection());
+                String json = readReleasesJson();
                 String currentVer;
                 try {
                     currentVer = (context).getPackageManager().getPackageInfo((context).getPackageName(), 0).versionName;
@@ -77,23 +112,7 @@ public class UpdateUtil {
                     if (toast) Extensions.showMessage(context, R.string.no_update_found);
                     return;
                 }
-                char[] curr = TextUtils.isEmpty(currentVer) ? new char[] { '1', '0', '9' }
-                        : currentVer.replace(".", "").toCharArray();
-                char[] latest = release.version.replace(".", "").toCharArray();
-                boolean newVer = false;
-                int maxLength = Math.max(curr.length, latest.length);
-                for (int i = 0; i < maxLength; i++) {
-                    char currChar = i < curr.length ? curr[i] : '0';
-                    char latestChar = i < latest.length ? latest[i] : '0';
-
-                    if (latestChar > currChar) {
-                        newVer = true;
-                        break;
-                    } else if (latestChar < currChar) {
-                        break;
-                    }
-                }
-                if (!newVer) {
+                if (!isNewerVersion(currentVer, release.version)) {
                     if (toast) Extensions.showMessage(context, R.string.no_update_found);
                     return;
                 }
@@ -115,21 +134,32 @@ public class UpdateUtil {
                     AlertDialog alertDialog = new MaterialAlertDialogBuilder(context)
                             .setTitle(rss.getString(R.string.new_ver, release.version)).setView(tv)
                             .setPositiveButton(rss.getString(R.string.download), (dialog, which) -> {
-                                DownloadManager.Request request = new DownloadManager.Request(
-                                        Uri.parse(link))
-                                        .setTitle(filename).setDescription(filename)
-                                        .setMimeType("application/vnd.android.package-archive")
-                                        .setDestinationInExternalPublicDir(
-                                                Environment.DIRECTORY_DOWNLOADS, filename)
-                                        .setNotificationVisibility(
-                                                DownloadManager.Request.VISIBILITY_VISIBLE
-                                                        | DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                                long downloadId = ((DownloadManager) context.getSystemService(DOWNLOAD_SERVICE)).enqueue(request);
-                                                prefs.edit().putLong(PREF_DOWNLOAD_ID, downloadId).apply();
-                                            })
+                                Extensions.showMessage(context, "正在测速选择最佳下载线路...");
+                                new Thread(() -> {
+                                    RouteResult best = selectFastestDownloadRoute(link);
+                                    MAIN_HANDLER.post(() -> {
+                                        if (best.latencyMs >= 0) {
+                                            Extensions.showMessage(context, "已选择线路: " + best.label + " (" + best.latencyMs + "ms)");
+                                        } else {
+                                            Extensions.showMessage(context, "测速超时，使用默认 GitHub 线路下载");
+                                        }
+                                        DownloadManager.Request request = new DownloadManager.Request(
+                                                Uri.parse(best.url))
+                                                .setTitle(filename).setDescription(filename)
+                                                .setMimeType("application/vnd.android.package-archive")
+                                                .setDestinationInExternalPublicDir(
+                                                        Environment.DIRECTORY_DOWNLOADS, filename)
+                                                .setNotificationVisibility(
+                                                        DownloadManager.Request.VISIBILITY_VISIBLE
+                                                                | DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                                        long downloadId = ((DownloadManager) context.getSystemService(DOWNLOAD_SERVICE)).enqueue(request);
+                                        prefs.edit().putLong(PREF_DOWNLOAD_ID, downloadId).apply();
+                                    });
+                                }).start();
+                            })
                                     .setNegativeButton("Go to GitHub Release", (dialog, which) -> context
                                             .startActivity(new Intent(Intent.ACTION_VIEW).setData(Uri.parse(
-                                                    "https://github.com/AbdurazaaqMohammed/MP-Manager/releases/tag/" + release.version))))
+                                                    GITHUB_RELEASE_TAG_URL + release.tagName))))
                                     .setNeutralButton(rss.getString(android.R.string.cancel), null).create();
                     alertDialog.setOnDismissListener(dialog -> prefs.edit()
                             .putString(PREF_LAST_VER_CHECKED, release.version).apply());
@@ -166,8 +196,11 @@ public class UpdateUtil {
                 if (asset == null) continue;
                 String name = asset.optString("name", "");
                 String url = asset.optString("browser_download_url", "");
-                if (!name.toLowerCase().startsWith(APP_APK_PREFIX) || url.isEmpty()) continue;
+                if (!name.toLowerCase().startsWith(APP_APK_PREFIX)
+                        || !name.toLowerCase().endsWith(".apk")
+                        || url.isEmpty()) continue;
                 AppRelease out = new AppRelease();
+                out.tagName = tag;
                 out.version = tagMatcher.group(1);
                 out.apkName = name;
                 out.apkUrl = url;
@@ -176,6 +209,106 @@ public class UpdateUtil {
             }
         }
         return null;
+    }
+
+    private static boolean isNewerVersion(String currentVer, String latestVer) {
+        if (TextUtils.isEmpty(latestVer)) return false;
+        String curr = TextUtils.isEmpty(currentVer) ? "1.0.0" : currentVer.replaceFirst("^v", "");
+        String[] currParts = curr.split("\\.");
+        String[] latestParts = latestVer.split("\\.");
+        int maxLen = Math.max(currParts.length, latestParts.length);
+        for (int i = 0; i < maxLen; i++) {
+            int c = i < currParts.length ? parseIntSafe(currParts[i]) : 0;
+            int l = i < latestParts.length ? parseIntSafe(latestParts[i]) : 0;
+            if (l > c) return true;
+            if (l < c) return false;
+        }
+        return false;
+    }
+
+    private static int parseIntSafe(String s) {
+        try {
+            return Integer.parseInt(s.replaceAll("[^0-9]", ""));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private static String readReleasesJson() throws IOException {
+        IOException lastError = null;
+        for (String prefix : DOWNLOAD_MIRRORS) {
+            try {
+                return read(getHttpURLConnection(prefix + GITHUB_RELEASES_API));
+            } catch (IOException e) {
+                lastError = e;
+            }
+        }
+        throw lastError != null ? lastError : new IOException("Failed to fetch releases");
+    }
+
+    @NonNull
+    private static RouteResult selectFastestDownloadRoute(String rawUrl) {
+        ExecutorService pool = Executors.newFixedThreadPool(DOWNLOAD_MIRRORS.length);
+        List<Callable<RouteResult>> tasks = new ArrayList<>(DOWNLOAD_MIRRORS.length);
+        for (String prefix : DOWNLOAD_MIRRORS) {
+            final String candidateUrl = prefix + rawUrl;
+            final String label = prefix.isEmpty() ? "GitHub 直连" : Uri.parse(prefix).getHost();
+            tasks.add(() -> probeRoute(candidateUrl, label));
+        }
+
+        RouteResult best = null;
+        try {
+            List<Future<RouteResult>> futures = pool.invokeAll(tasks, PROBE_TIMEOUT_MS + 500L, TimeUnit.MILLISECONDS);
+            for (Future<RouteResult> future : futures) {
+                if (!future.isDone() || future.isCancelled()) continue;
+                try {
+                    RouteResult res = future.get();
+                    if (res != null && res.latencyMs >= 0 && (best == null || res.latencyMs < best.latencyMs)) {
+                        best = res;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        } finally {
+            pool.shutdownNow();
+        }
+        return best != null ? best : new RouteResult(rawUrl, "GitHub 直连", -1);
+    }
+
+    private static RouteResult probeRoute(String urlStr, String label) {
+        long start = SystemClock.elapsedRealtime();
+        HttpURLConnection conn = null;
+        try {
+            conn = openProbeConnection(urlStr, "HEAD");
+            int code = conn.getResponseCode();
+            if (code == HttpURLConnection.HTTP_BAD_METHOD || code == 405) {
+                conn.disconnect();
+                conn = openProbeConnection(urlStr, "GET");
+                conn.setRequestProperty("Range", "bytes=0-0");
+                code = conn.getResponseCode();
+            }
+            if (code >= 200 && code < 400) {
+                return new RouteResult(urlStr, label, SystemClock.elapsedRealtime() - start);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        return null;
+    }
+
+    @NonNull
+    private static HttpURLConnection openProbeConnection(String urlStr, String method) throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+        conn.setRequestMethod(method);
+        conn.setConnectTimeout(PROBE_TIMEOUT_MS);
+        conn.setReadTimeout(PROBE_TIMEOUT_MS);
+        conn.setInstanceFollowRedirects(true);
+        conn.setRequestProperty("User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0");
+        return conn;
     }
 
     private static String read(HttpURLConnection conn) throws IOException {
@@ -190,9 +323,11 @@ public class UpdateUtil {
     }
 
     @NonNull
-    private static HttpURLConnection getHttpURLConnection() throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL("https://api.github.com/repos/AbdurazaaqMohammed/MP-Manager/releases").openConnection();
+    private static HttpURLConnection getHttpURLConnection(String apiUrl) throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(apiUrl).openConnection();
         conn.setRequestMethod("GET");
+        conn.setConnectTimeout(5000);
+        conn.setReadTimeout(5000);
         conn.setRequestProperty("User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0");
         conn.setRequestProperty("Accept", "application/vnd.github+json");
