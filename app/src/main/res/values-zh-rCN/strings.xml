@@ -2363,4 +2363,10 @@ Layout Inspector
     <string name="encoding_shiftjis">Shift-JIS (日文)</string>
     <string name="encoding_cp437">CP437 (DOS/OEM 默认)</string>
     <string name="encoding_custom">自定义编码…</string>
+    <string name="haptic">触觉反馈</string>
+    <string name="haptics_enabled">启用触觉反馈</string>
+    <string name="haptics_selection">选择触觉反馈</string>
+    <string name="haptics_actions">操作触觉反馈</string>
+    <string name="haptics_navigation">导航触觉反馈</string>
+    <string name="haptics_completion">完成触觉反馈</string>
 </resources>
