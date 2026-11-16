@@ -99,7 +99,10 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+        getWindow().getDecorView().setBackgroundColor(0xFF181818);
+        getWindow().setStatusBarColor(0xFF252526);
+        getWindow().setNavigationBarColor(0xFF181818);
 
         Intent intent = getIntent();
         String scriptName = intent != null ? intent.getStringExtra(EXTRA_SCRIPT_NAME) : null;
@@ -181,20 +184,12 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
         setContentView(root);
         View contentView = getWindow().getDecorView().findViewById(android.R.id.content);
         final View insetTarget = contentView != null ? contentView : root;
+        insetTarget.setBackgroundColor(0xFF181818);
         if (contentView != null) {
             root.setPadding(0, 0, 0, 0);
         }
         ViewCompat.setOnApplyWindowInsetsListener(insetTarget, (v, windowInsets) -> {
-            Insets sys = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
-            Insets ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime());
-            int[] loc = new int[2];
-            v.getLocationInWindow(loc);
-            int topPad = Math.max(0, sys.top - loc[1]);
-            int bottom = Math.max(sys.bottom, ime.bottom);
-            v.setPadding(sys.left, topPad, sys.right, bottom);
-            if (isScriptMode && scriptScrollView != null && ime.bottom > 0) {
-                scriptScrollView.post(() -> scriptScrollView.fullScroll(View.FOCUS_DOWN));
-            }
+            applySafeInsets(v, windowInsets);
             return WindowInsetsCompat.CONSUMED;
         });
         ViewCompat.setWindowInsetsAnimationCallback(insetTarget, new WindowInsetsAnimationCompat.Callback(
@@ -203,12 +198,7 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
             @Override
             public WindowInsetsCompat onProgress(@NonNull WindowInsetsCompat insets,
                                                  @NonNull java.util.List<WindowInsetsAnimationCompat> runningAnimations) {
-                Insets sys = insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
-                Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
-                int[] loc = new int[2];
-                insetTarget.getLocationInWindow(loc);
-                int topPad = Math.max(0, sys.top - loc[1]);
-                insetTarget.setPadding(sys.left, topPad, sys.right, Math.max(sys.bottom, ime.bottom));
+                applySafeInsets(insetTarget, insets);
                 return insets;
             }
         });
@@ -217,25 +207,14 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
 
             @Override
             public void onGlobalLayout() {
-                int[] loc = new int[2];
-                insetTarget.getLocationInWindow(loc);
                 WindowInsetsCompat rootInsets = ViewCompat.getRootWindowInsets(insetTarget);
                 if (rootInsets != null) {
-                    Insets sys = rootInsets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
-                    Insets ime = rootInsets.getInsets(WindowInsetsCompat.Type.ime());
-                    int topPad = Math.max(0, sys.top - loc[1]);
-                    if (ime.bottom > 0) {
-                        int target = Math.max(sys.bottom, ime.bottom);
-                        if (insetTarget.getPaddingTop() != topPad || insetTarget.getPaddingBottom() != target) {
-                            insetTarget.setPadding(sys.left, topPad, sys.right, target);
-                        }
-                        lastBottomPad = target;
-                        return;
-                    }
-                    if (insetTarget.getPaddingTop() != topPad) {
-                        insetTarget.setPadding(sys.left, topPad, sys.right, sys.bottom);
-                    }
+                    int applied = applySafeInsets(insetTarget, rootInsets);
+                    lastBottomPad = applied;
+                    return;
                 }
+                int[] loc = new int[2];
+                insetTarget.getLocationInWindow(loc);
                 Rect r = new Rect();
                 insetTarget.getWindowVisibleDisplayFrame(r);
                 int targetBottom = loc[1] + insetTarget.getHeight();
@@ -257,6 +236,35 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
         ViewCompat.requestApplyInsets(insetTarget);
 
         initTerminalSession();
+    }
+
+    private int applySafeInsets(View insetTarget, WindowInsetsCompat windowInsets) {
+        Insets sys = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+        Insets ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime());
+        View decor = getWindow().getDecorView();
+        int decorH = decor.getHeight();
+        int[] loc = new int[2];
+        insetTarget.getLocationInWindow(loc);
+        int topPad = Math.max(0, sys.top - loc[1]);
+        int targetBottom = loc[1] + insetTarget.getHeight();
+        int bottomPad;
+        if (decorH > 0 && targetBottom > 0) {
+            int sysOverlap = Math.max(0, targetBottom - (decorH - sys.bottom));
+            int imeOverlap = ime.bottom > 0 ? Math.max(0, targetBottom - (decorH - ime.bottom)) : 0;
+            bottomPad = Math.max(sysOverlap, imeOverlap);
+        } else {
+            bottomPad = Math.max(sys.bottom, ime.bottom);
+        }
+        if (insetTarget.getPaddingLeft() != sys.left
+                || insetTarget.getPaddingTop() != topPad
+                || insetTarget.getPaddingRight() != sys.right
+                || insetTarget.getPaddingBottom() != bottomPad) {
+            insetTarget.setPadding(sys.left, topPad, sys.right, bottomPad);
+        }
+        if (isScriptMode && scriptScrollView != null && ime.bottom > 0) {
+            scriptScrollView.post(() -> scriptScrollView.fullScroll(View.FOCUS_DOWN));
+        }
+        return bottomPad;
     }
 
     private View buildInputBar() {
