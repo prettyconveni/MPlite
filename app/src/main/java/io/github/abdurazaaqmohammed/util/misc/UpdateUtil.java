@@ -31,7 +31,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -55,15 +56,15 @@ public class UpdateUtil {
     private static final String GITHUB_REPO = "prettyconveni/MPlite";
     private static final String GITHUB_RELEASES_API = "https://api.github.com/repos/" + GITHUB_REPO + "/releases";
     private static final String GITHUB_RELEASE_TAG_URL = "https://github.com/" + GITHUB_REPO + "/releases/tag/";
-    private static final int PROBE_TIMEOUT_MS = 3500;
+    private static final int PROBE_TIMEOUT_MS = 6000;
 
-    /** Direct GitHub + mirror prefixes for release downloads and API fallback. */
+    /** Direct GitHub + live mirror prefixes for release downloads and API fallback. */
     private static final String[] DOWNLOAD_MIRRORS = new String[] {
             "",
+            "https://gh-proxy.org/",
+            "https://cdn.gh-proxy.org/",
             "https://gh-proxy.com/",
-            "https://ghfast.top/",
-            "https://mirror.ghproxy.com/",
-            "https://ghproxy.net/"
+            "https://ghfast.top/"
     };
 
     /** Tag that names an app version: "1.1.2" or "v1.1.2". */
@@ -141,7 +142,7 @@ public class UpdateUtil {
                                         if (best.latencyMs >= 0) {
                                             Extensions.showMessage(context, "已选择线路: " + best.label + " (" + best.latencyMs + "ms)");
                                         } else {
-                                            Extensions.showMessage(context, "测速超时，使用默认 GitHub 线路下载");
+                                            Extensions.showMessage(context, "测速超时，使用备用镜像线路: " + best.label);
                                         }
                                         DownloadManager.Request request = new DownloadManager.Request(
                                                 Uri.parse(best.url))
@@ -249,22 +250,33 @@ public class UpdateUtil {
     @NonNull
     private static RouteResult selectFastestDownloadRoute(String rawUrl) {
         ExecutorService pool = Executors.newFixedThreadPool(DOWNLOAD_MIRRORS.length);
-        List<Callable<RouteResult>> tasks = new ArrayList<>(DOWNLOAD_MIRRORS.length);
+        CompletionService<RouteResult> ecs = new ExecutorCompletionService<>(pool);
         for (String prefix : DOWNLOAD_MIRRORS) {
             final String candidateUrl = prefix + rawUrl;
             final String label = prefix.isEmpty() ? "GitHub 直连" : Uri.parse(prefix).getHost();
-            tasks.add(() -> probeRoute(candidateUrl, label));
+            ecs.submit(() -> probeRoute(candidateUrl, label));
         }
 
         RouteResult best = null;
+        long deadline = SystemClock.elapsedRealtime() + PROBE_TIMEOUT_MS;
+        long firstHitGraceDeadline = -1L;
         try {
-            List<Future<RouteResult>> futures = pool.invokeAll(tasks, PROBE_TIMEOUT_MS + 500L, TimeUnit.MILLISECONDS);
-            for (Future<RouteResult> future : futures) {
-                if (!future.isDone() || future.isCancelled()) continue;
+            for (int i = 0; i < DOWNLOAD_MIRRORS.length; i++) {
+                long now = SystemClock.elapsedRealtime();
+                long waitUntil = firstHitGraceDeadline > 0 ? Math.min(deadline, firstHitGraceDeadline) : deadline;
+                long remaining = waitUntil - now;
+                if (remaining <= 0) break;
+                Future<RouteResult> future = ecs.poll(remaining, TimeUnit.MILLISECONDS);
+                if (future == null) break;
                 try {
                     RouteResult res = future.get();
-                    if (res != null && res.latencyMs >= 0 && (best == null || res.latencyMs < best.latencyMs)) {
-                        best = res;
+                    if (res != null && res.latencyMs >= 0) {
+                        if (best == null || res.latencyMs < best.latencyMs) {
+                            best = res;
+                        }
+                        if (firstHitGraceDeadline < 0) {
+                            firstHitGraceDeadline = SystemClock.elapsedRealtime() + 600L;
+                        }
                     }
                 } catch (Exception ignored) {
                 }
@@ -274,7 +286,7 @@ public class UpdateUtil {
         } finally {
             pool.shutdownNow();
         }
-        return best != null ? best : new RouteResult(rawUrl, "GitHub 直连", -1);
+        return best != null ? best : new RouteResult("https://gh-proxy.org/" + rawUrl, "gh-proxy.org", -1);
     }
 
     private static RouteResult probeRoute(String urlStr, String label) {
