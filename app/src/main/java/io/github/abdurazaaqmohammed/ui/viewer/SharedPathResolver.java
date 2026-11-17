@@ -990,7 +990,11 @@ public final class SharedPathResolver {
                 || path.equals("/data")
                 || path.startsWith("/config/")
                 || path.startsWith("/sys/")
-                || path.startsWith("/proc/");
+                || path.startsWith("/proc/")
+                || path.contains("/Android/data/")
+                || path.endsWith("/Android/data")
+                || path.contains("/Android/obb/")
+                || path.endsWith("/Android/obb");
     }
 
     private static boolean isCancelled(Cancel cancel) {
