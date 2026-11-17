@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag name (leave empty for auto v1.1.4-<run_number>)'
+        description: 'Release tag name (leave empty for auto v1.1.5-<run_number>)'
         required: false
         default: ''
   push:
@@ -43,7 +43,7 @@ jobs:
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG="${{ github.ref_name }}"
           else
-            TAG="v1.1.4-${{ github.run_number }}"
+            TAG="v1.1.5-${{ github.run_number }}"
           fi
           APK_SRC="app/build/outputs/apk/full/release/app-full-release.apk"
           if [ ! -f "$APK_SRC" ]; then
