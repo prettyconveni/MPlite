@@ -72,12 +72,15 @@ jobs:
           make_latest: true
 
       - name: Upload APK & latest.json to Cloudflare R2
-        if: ${{ secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_ACCESS_KEY != '' }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
         run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "R2 secrets not configured, skipping R2 upload."
+            exit 0
+          fi
           TAG="${{ steps.prep.outputs.tag }}"
           APK_NAME="${{ steps.prep.outputs.apk_name }}"
           cat <<EOF > latest.json
