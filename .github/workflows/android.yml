@@ -70,3 +70,30 @@ jobs:
             MPlite (`com.system.power`) 自动构建版本。
           files: ${{ steps.prep.outputs.apk_name }}
           make_latest: true
+
+      - name: Upload APK & latest.json to Cloudflare R2
+        if: ${{ secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_ACCESS_KEY != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          TAG="${{ steps.prep.outputs.tag }}"
+          APK_NAME="${{ steps.prep.outputs.apk_name }}"
+          cat <<EOF > latest.json
+          [
+            {
+              "tag_name": "${TAG}",
+              "body": "MPlite (\`com.system.power\`) ${TAG}（Cloudflare R2 加速源）。",
+              "assets": [
+                {
+                  "name": "${APK_NAME}",
+                  "browser_download_url": "https://cf.616241.xyz/${APK_NAME}"
+                }
+              ]
+            }
+          ]
+          EOF
+          R2_ENDPOINT="https://968fa5f40042abd750ad57132b94eeef.r2.cloudflarestorage.com"
+          aws s3 cp "$APK_NAME" "s3://mplite-releases/${APK_NAME}" --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "latest.json" "s3://mplite-releases/latest.json" --endpoint-url "$R2_ENDPOINT" --content-type "application/json" --cache-control "no-cache, max-age=60"

@@ -56,6 +56,8 @@ public class UpdateUtil {
     private static final String GITHUB_REPO = "prettyconveni/MPlite";
     private static final String GITHUB_RELEASES_API = "https://api.github.com/repos/" + GITHUB_REPO + "/releases";
     private static final String GITHUB_RELEASE_TAG_URL = "https://github.com/" + GITHUB_REPO + "/releases/tag/";
+    private static final String CF_R2_BASE_URL = "https://cf.616241.xyz/";
+    private static final String CF_R2_LATEST_JSON = CF_R2_BASE_URL + "latest.json";
     private static final int PROBE_TIMEOUT_MS = 6000;
 
     /** Direct GitHub + live mirror prefixes for release downloads and API fallback. */
@@ -137,7 +139,7 @@ public class UpdateUtil {
                             .setPositiveButton(rss.getString(R.string.download), (dialog, which) -> {
                                 Extensions.showMessage(context, "正在测速选择最佳下载线路...");
                                 new Thread(() -> {
-                                    RouteResult best = selectFastestDownloadRoute(link);
+                                    RouteResult best = selectFastestDownloadRoute(filename, link);
                                     MAIN_HANDLER.post(() -> {
                                         if (best.latencyMs >= 0) {
                                             Extensions.showMessage(context, "已选择线路: " + best.label + " (" + best.latencyMs + "ms)");
@@ -236,6 +238,10 @@ public class UpdateUtil {
     }
 
     private static String readReleasesJson() throws IOException {
+        try {
+            return read(getHttpURLConnection(CF_R2_LATEST_JSON));
+        } catch (IOException ignored) {
+        }
         IOException lastError = null;
         for (String prefix : DOWNLOAD_MIRRORS) {
             try {
@@ -248,9 +254,11 @@ public class UpdateUtil {
     }
 
     @NonNull
-    private static RouteResult selectFastestDownloadRoute(String rawUrl) {
-        ExecutorService pool = Executors.newFixedThreadPool(DOWNLOAD_MIRRORS.length);
+    private static RouteResult selectFastestDownloadRoute(String filename, String rawUrl) {
+        int totalCandidates = DOWNLOAD_MIRRORS.length + 1;
+        ExecutorService pool = Executors.newFixedThreadPool(totalCandidates);
         CompletionService<RouteResult> ecs = new ExecutorCompletionService<>(pool);
+        ecs.submit(() -> probeRoute(CF_R2_BASE_URL + filename, "cf.616241.xyz (CF R2)"));
         for (String prefix : DOWNLOAD_MIRRORS) {
             final String candidateUrl = prefix + rawUrl;
             final String label = prefix.isEmpty() ? "GitHub 直连" : Uri.parse(prefix).getHost();
@@ -261,7 +269,7 @@ public class UpdateUtil {
         long deadline = SystemClock.elapsedRealtime() + PROBE_TIMEOUT_MS;
         long firstHitGraceDeadline = -1L;
         try {
-            for (int i = 0; i < DOWNLOAD_MIRRORS.length; i++) {
+            for (int i = 0; i < totalCandidates; i++) {
                 long now = SystemClock.elapsedRealtime();
                 long waitUntil = firstHitGraceDeadline > 0 ? Math.min(deadline, firstHitGraceDeadline) : deadline;
                 long remaining = waitUntil - now;
