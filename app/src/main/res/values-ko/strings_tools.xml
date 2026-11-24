@@ -1,0 +1,24 @@
+<resources>
+    <string name="tools_hub_search">도구 및 팩 검색</string>
+    <string name="tools_hub_hint">모든 도구를 한곳에서 확인하세요. 도구를 길게 눌러 홈 화면 바로가기를 만드세요.</string>
+    <string name="tools_hub_summary_compact">도구 %1$d개 · 설치된 팩 %2$d개</string>
+    <string name="tools_hub_no_results">검색 결과와 일치하는 도구가 없습니다</string>
+    <string name="tools_hub_download_badge">다운로드</string>
+    <string name="tools_hub_pack_metadata">도구 %1$d개 · v%2$s · %3$s</string>
+    <string name="tools_hub_pack_installed">설치됨</string>
+    <string name="tools_hub_pack_available">선택적 다운로드</string>
+    <string name="tools_hub_pack_update_available">업데이트 가능</string>
+    <string name="tools_hub_min_sdk">Android API %1$d 이상이 필요합니다</string>
+    <string name="tools_hub_install_apk">APK에서 팩 설치</string>
+    <string name="tools_hub_advanced_plugins">고급 도구 및 플러그인</string>
+    <string name="tool_requires_root">이 도구를 사용하려면 루트 권한이 필요합니다.</string>
+    <string name="tool_extract_subtitle">앱을 찾아보고 APK 파일 추출</string>
+    <string name="tool_recycle_subtitle">삭제된 파일 복원 또는 제거</string>
+    <string name="tool_ftp_subtitle">로컬 네트워크에서 파일 공유</string>
+    <string name="tool_network_subtitle">FTP, WebDAV 및 SMB 연결</string>
+    <string name="tool_layout_subtitle">화면의 앱 및 레이아웃 검사</string>
+    <string name="tool_color_subtitle">어떤 화면에서든 색상 선택</string>
+    <string name="tool_freestyle_subtitle">시각적 구성을 만들고 편집</string>
+    <string name="screen_ocr_title">화면의 텍스트 복사</string>
+    <string name="screen_ocr_subtitle">화면과 이미지의 오프라인 OCR</string>
+</resources>

@@ -48,14 +48,14 @@ import java.util.function.Consumer;
 
 import io.github.abdurazaaqmohammed.ui.main.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
-import io.github.abdurazaaqmohammed.privilege.impl.ShizukuFile;
+import io.github.abdurazaaqmohammed.privilege.internal.ShizukuFile;
 import io.github.abdurazaaqmohammed.feature.boot.BootInspectManager;
 import io.github.abdurazaaqmohammed.data.prefs.ListPrefs;
 import io.github.abdurazaaqmohammed.plugins.ext.ExtensionRegistry;
 import io.github.abdurazaaqmohammed.plugins.ext.FileMenuAction;
 import io.github.abdurazaaqmohammed.plugins.ipc.ExternalActions;
 import io.github.abdurazaaqmohammed.plugins.ipc.PluginContracts;
-import io.github.abdurazaaqmohammed.plugins.ipc.PluginHost;
+import io.github.abdurazaaqmohammed.plugins.ipc.PluginThemeRequests;
 import io.github.abdurazaaqmohammed.plugins.ipc.PluginTrust;
 import io.github.abdurazaaqmohammed.domain.files.ZipEntryInfo;
 import io.github.abdurazaaqmohammed.ui.main.SwipeTouchListener;
@@ -66,9 +66,8 @@ import io.github.abdurazaaqmohammed.ui.editor.CompareDexOptionsDialog;
 import io.github.abdurazaaqmohammed.ui.editor.CompareZipDialog;
 import io.github.abdurazaaqmohammed.util.archive.ArchiveBrowseUtil;
 import io.github.abdurazaaqmohammed.util.archive.ArchiveUtil;
-import io.github.abdurazaaqmohammed.privilege.impl.RootManager;
 import io.github.abdurazaaqmohammed.util.io.SafFile;
-import io.github.abdurazaaqmohammed.privilege.impl.RootFile;
+import io.github.abdurazaaqmohammed.privilege.internal.RootFile;
 import io.github.abdurazaaqmohammed.privilege.api.PrivilegeManager;
 import io.github.abdurazaaqmohammed.feature.files.EntryDialogs;
 import io.github.abdurazaaqmohammed.feature.files.FileOpener;
@@ -77,9 +76,13 @@ import io.github.abdurazaaqmohammed.util.archive.SplitArchiveUtil;
 import io.github.abdurazaaqmohammed.feature.media.BatchImageTools;
 import io.github.abdurazaaqmohammed.util.io.FileUtils;
 import io.github.abdurazaaqmohammed.util.text.MimeUtil;
+import io.github.abdurazaaqmohammed.util.io.PathGuards;
 import io.github.codehasan.colorpicker.extensions.Extensions;
 
 public class MainFilesArrayAdapter extends RecyclerView.Adapter<MainFilesArrayAdapter.ViewHolder> {
+
+    /** Upper bound for plugin-supplied result text shown to the user. */
+    public static final int MAX_PLUGIN_MESSAGE_CHARS = 512;
 
     private final MainActivity context;
     public final Object[] values;
@@ -321,7 +324,7 @@ public class MainFilesArrayAdapter extends RecyclerView.Adapter<MainFilesArrayAd
      * {@link File} wrapping e.g. {@code /data/data/...} reports neither
      * directory nor file (the app uid cannot stat it), which previously made
      * the ".." entry fall into the open-as-file branch and fail in
-     * {@code RootManager.streamFromRoot}. Ask the elevated backend instead.
+     * {@code PrivilegeManager.Root.streamFromRoot}. Ask the elevated backend instead.
      */
     private boolean isDir(File f) {
         if (f instanceof RootFile rf) return rf.isDirectory();
@@ -368,8 +371,8 @@ public class MainFilesArrayAdapter extends RecyclerView.Adapter<MainFilesArrayAd
         try {
             String path = f.getAbsolutePath();
             PrivilegeManager.Backend backend = PrivilegeManager.Files.active(context);
-            if (backend == PrivilegeManager.Backend.ROOT || RootManager.getInstance(context).isRootAvailable()) {
-                return RootManager.getInstance(context).isDirectory(path);
+            if (backend == PrivilegeManager.Backend.ROOT || PrivilegeManager.Root.isRootAvailable(context)) {
+                return PrivilegeManager.Files.isDirectory(context, path);
             }
             if (backend == PrivilegeManager.Backend.SHIZUKU) {
                 return PrivilegeManager.Shizuku.isDirectory(context, path);
@@ -402,7 +405,7 @@ public class MainFilesArrayAdapter extends RecyclerView.Adapter<MainFilesArrayAd
             return;
         }
         String path = f.getAbsolutePath();
-        if ("/".equals(path)) {
+        if ("/".equals(path) || PathGuards.isRootOnlyPath(path) || PrivilegeManager.Shizuku.isAndroidDataPath(f)) {
             context.clearGreen(pane1);
             context.setSelectedPane(pane1 ? 1 : 2);
             context.loadFolderInPaneAsync(f, pane1);
@@ -622,54 +625,88 @@ public class MainFilesArrayAdapter extends RecyclerView.Adapter<MainFilesArrayAd
     }
 
     /**
-     * Runs an external (out-of-process) file action after consent: stages the
-     * selection as content URIs with grants and forwards the plugin result
-     * message to the user.
+     * Shared runner for external (out-of-process) file actions, used by the
+     * file menu (legacy actions and filemenu.extra hooks alike) and by the
+     * ELF options dialog (dialog.elf.extra hooks). Grants are intent-only:
+     * READ flags on the request plus the data/ClipData URIs; Android manages
+     * the one-shot grant lifetime and no persistent package grant is made, so
+     * no raw path ever crosses the boundary. Dispatch always goes through
+     * {@link ExternalActions#intent} so hook entries carry their own public
+     * action plus plugin/hook/contract and theme extras, and an optional
+     * theme request in the result is surfaced by the parent handler.
      */
-    private void runExternalFileAction(ExternalActions.Entry entry,
-                                       List<File> files, List<Uri> uris) {
+    public static void runExternalFileAction(MainActivity context,
+                                             ExternalActions.Entry entry,
+                                             List<File> files, List<Uri> uris,
+                                             Runnable onResultCleanup) {
+        Runnable cleanup = () -> {
+            if (onResultCleanup != null) {
+                try { onResultCleanup.run(); } catch (Exception ignored) {}
+            }
+        };
         try {
-            if (entry == null || files == null || files.isEmpty()
-                    || uris == null || uris.size() != files.size()) return;
-            Intent intent = PluginHost.explicitIntent(entry.plugin,
+            if (context == null || context.isFinishing() || context.isDestroyed()
+                    || entry == null || entry.plugin == null
+                    || files == null || files.isEmpty() || files.size() > 64
+                    || uris == null || uris.size() != files.size()) {
+                cleanup.run();
+                return;
+            }
+            Intent intent = ExternalActions.intent(context, entry,
                     PluginContracts.ACTION_FILE_MENU);
-            intent.putExtra(PluginContracts.EXTRA_PLUGIN_ID, entry.plugin.pluginId);
             ArrayList<String> names = new ArrayList<>();
             for (File f : files) names.add(f.getName());
             intent.putStringArrayListExtra(PluginContracts.EXTRA_FILE_NAMES, names);
-            intent.setDataAndType(uris.get(0),
-                    context.getContentResolver().getType(uris.get(0)));
-            if (uris.size() > 1) {
-                ClipData clip = ClipData.newRawUri("files", uris.get(0));
-                for (int i = 1; i < uris.size(); i++) {
-                    clip.addItem(new ClipData.Item(uris.get(i)));
-                }
-                intent.setClipData(clip);
-            }
+            String mime = context.getContentResolver().getType(uris.get(0));
+            if (mime == null) mime = "application/octet-stream";
+            intent.setDataAndType(uris.get(0), mime);
+            intent.putExtra(PluginContracts.EXTRA_MIME, mime);
+            ClipData clip = ClipData.newRawUri("files", uris.get(0));
+            for (int i = 1; i < uris.size(); i++) clip.addItem(new ClipData.Item(uris.get(i)));
+            intent.setClipData(clip);
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            for (Uri uri : uris) {
-                try {
-                    context.grantUriPermission(entry.plugin.packageName, uri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                } catch (Exception ignored) {
-                }
-            }
             PluginTrust.ensureTrusted(context, entry.plugin, () ->
                     context.launchExternalFile(intent, result -> {
                         try {
-                            Intent data = result.getData();
+                            Intent data = result == null ? null : result.getData();
+                            if (result != null && result.getResultCode() == Activity.RESULT_OK) {
+                                PluginThemeRequests.handle(context, entry, data);
+                            }
                             String msg = data == null ? null : data.getStringExtra(
                                     PluginContracts.EXTRA_MESSAGE);
                             if (msg == null || msg.isEmpty()) {
-                                msg = result.getResultCode() == Activity.RESULT_OK
+                                msg = result != null
+                                        && result.getResultCode() == Activity.RESULT_OK
                                         ? "Done" : "Cancelled";
                             }
-                            Extensions.showMessage(context, msg);
+                            Extensions.showMessage(context, boundedPluginMessage(msg));
                         } catch (Exception ignored) {
+                        } finally {
+                            cleanup.run();
                         }
-                    }));
+                    }), cleanup);
+        } catch (Exception ignored) {
+            cleanup.run();
+        }
+    }
+
+    /** Four-arg convenience for callers without result cleanup. */
+    public static void runExternalFileAction(MainActivity context,
+                                             ExternalActions.Entry entry,
+                                             List<File> files, List<Uri> uris) {
+        runExternalFileAction(context, entry, files, uris, null);
+    }
+
+    /** Plugin-supplied result text is clamped before any UI display. */
+    public static String boundedPluginMessage(String message) {
+        if (message == null) return "";
+        try {
+            if (message.length() > MAX_PLUGIN_MESSAGE_CHARS) {
+                return message.substring(0, MAX_PLUGIN_MESSAGE_CHARS);
+            }
         } catch (Exception ignored) {
         }
+        return message;
     }
 
     @Override
@@ -1208,7 +1245,7 @@ final View.OnClickListener originalClickListener;
                         ExternalActions.Entry externalFile =
                                 ExternalActions.findById(externalFileEntries, actionId);
                         if (externalFile != null) {
-                            runExternalFileAction(externalFile, pluginFiles, externalFileUris);
+                            runExternalFileAction(context, externalFile, pluginFiles, externalFileUris);
                             return;
                         }
                         switch (actionId) {

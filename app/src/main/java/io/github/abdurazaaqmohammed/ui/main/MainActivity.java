@@ -5,13 +5,14 @@ import io.github.abdurazaaqmohammed.feature.files.BookmarkShortcuts;
 import io.github.abdurazaaqmohammed.feature.system.SystemImageMountManager;
 
 import io.github.abdurazaaqmohammed.feature.system.ToolLauncher;
-import io.github.abdurazaaqmohammed.privilege.impl.RootFile;
+import io.github.abdurazaaqmohammed.privilege.internal.RootFile;
 import io.github.abdurazaaqmohammed.ui.common.util.DialogUtil;
 import io.github.abdurazaaqmohammed.util.misc.ErrorUtil;
 import io.github.abdurazaaqmohammed.ui.common.util.Haptics;
 import io.github.abdurazaaqmohammed.ui.common.util.KeyboardUtil;
 import io.github.abdurazaaqmohammed.feature.apk.SignWrapper;
 import io.github.abdurazaaqmohammed.data.prefs.UiPrefs;
+import io.github.abdurazaaqmohammed.util.misc.EditorTasks;
 import io.github.abdurazaaqmohammed.util.misc.UpdateUtil;
 
 import io.github.abdurazaaqmohammed.MPManager.R;
@@ -23,6 +24,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
@@ -32,6 +34,7 @@ import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -42,7 +45,9 @@ import android.os.Process;
 import android.provider.Settings;
 import android.sun.security.provider.JavaKeyStoreProvider;
 import android.text.TextUtils;
+import android.util.TypedValue;
 import android.view.GestureDetector;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -51,6 +56,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.PopupMenu;
@@ -102,8 +108,6 @@ import io.github.abdurazaaqmohammed.feature.files.SortFilterController;
 import androidx.appcompat.widget.Toolbar;
 import androidx.core.view.GestureDetectorCompat;
 import androidx.core.view.GravityCompat;
-import androidx.core.view.WindowCompat;
-import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.preference.PreferenceManager;
@@ -124,7 +128,9 @@ import com.reandroid.utils.io.FileUtil;
 
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
@@ -149,8 +155,12 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import io.github.abdurazaaqmohammed.feature.ftp.FTPFileWrapper;
-import io.github.abdurazaaqmohammed.privilege.impl.ShizukuFile;
-import io.github.abdurazaaqmohammed.privilege.impl.ShizukuFileOps;
+import io.github.abdurazaaqmohammed.plugins.ipc.ExternalActions;
+import io.github.abdurazaaqmohammed.plugins.ipc.HookRegistry;
+import io.github.abdurazaaqmohammed.plugins.ipc.PluginContracts;
+import io.github.abdurazaaqmohammed.plugins.ipc.PluginEvents;
+import io.github.abdurazaaqmohammed.plugins.ipc.PluginThemeRequests;
+import io.github.abdurazaaqmohammed.plugins.ipc.PluginTrust;
 import io.github.abdurazaaqmohammed.privilege.api.PrivilegeManager;
 import io.github.abdurazaaqmohammed.ui.main.FtpFilesArrayAdapter;
 import io.github.abdurazaaqmohammed.ui.main.HistoryAdapter;
@@ -165,12 +175,11 @@ import io.github.abdurazaaqmohammed.ui.main.UIHelper;
 import io.github.abdurazaaqmohammed.util.io.CopyUtil;
 import io.github.abdurazaaqmohammed.util.io.FileUtils;
 import io.github.abdurazaaqmohammed.util.io.ProgressManager;
-import io.github.abdurazaaqmohammed.privilege.impl.RootManager;
-import io.github.abdurazaaqmohammed.privilege.impl.RootPermissionHelper;
 import io.github.abdurazaaqmohammed.util.io.SafFile;
 import io.github.abdurazaaqmohammed.util.io.SafFs;
 import io.github.abdurazaaqmohammed.util.archive.ArchiveBrowseUtil;
 import io.github.abdurazaaqmohammed.util.archive.ArchiveUtil;
+import io.github.abdurazaaqmohammed.util.io.PathGuards;
 import io.github.codehasan.colorpicker.PreferencesDialogFragment;
 import io.github.codehasan.colorpicker.ServiceState;
 import io.github.codehasan.colorpicker.extensions.Extensions;
@@ -206,6 +215,19 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     private BottomSheetBehavior<LinearLayout> bottomSheetBehavior;
     public boolean isSidebarDrawerOpen;
     public boolean isBookmarksDrawerOpen;
+    private boolean isRightDrawerOpen;
+    private TextView batteryMonitorText;
+    private final Runnable batteryTicker = new Runnable() {
+        @Override
+        public void run() {
+            if (isRightDrawerOpen && !isFinishing() && !isDestroyed()) {
+                updateBatteryStatus();
+                if (handler != null) {
+                    handler.postDelayed(this, 1000);
+                }
+            }
+        }
+    };
 
     public Handler handler;
     private boolean systemTheme;
@@ -246,6 +268,9 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     /** Generation per pane: a stale background listing never overwrites a newer pane. */
     private volatile long paneLoadGen1;
     private volatile long paneLoadGen2;
+    /** Folder counts can finish after a newer pane or archive has been selected. */
+    private final java.util.concurrent.atomic.AtomicLong folderHeaderGeneration =
+            new java.util.concurrent.atomic.AtomicLong();
     private String pendingDirToLoad;
     private String pendingHighlightName;
 
@@ -381,14 +406,20 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                                 }
                             }
                             pm.play(q, start);
-                            if (miniPlayerDialog == null || !miniPlayerDialog.isShowing()) (miniPlayerDialog = new MiniPlayerDialog(this)).show();
+                            showMiniPlayer();
                             return;
                         }
                     }
                 }
             } catch (Exception ignored) {}
             pm.play(PlayerManager.buildMediaItem(this, filePath));
-            if (miniPlayerDialog == null || !miniPlayerDialog.isShowing()) (miniPlayerDialog = new MiniPlayerDialog(this)).show();
+            showMiniPlayer();
+        }
+    }
+
+    public void showMiniPlayer() {
+        if (miniPlayerDialog == null || !miniPlayerDialog.isShowing()) {
+            (miniPlayerDialog = new MiniPlayerDialog(this)).show();
         }
     }
 
@@ -422,6 +453,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     @Override
     protected void onPause() {
         super.onPause();
+        stopBatteryMonitor();
         updates.unregister();
         SharedPreferences settings = PreferenceManager.getDefaultSharedPreferences(this);
         SharedPreferences.Editor editor = settings.edit()
@@ -742,10 +774,10 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             return;
         }
         try {
-            RootPermissionHelper.tryAutoGrantInspector(MainActivity.this);
+            PrivilegeManager.Permissions.tryAutoGrantInspector(MainActivity.this);
         } catch (Exception ignored) {
         }
-        if (RootPermissionHelper.hasAccessibility(this)
+        if (PrivilegeManager.Permissions.hasAccessibility(this)
                 && AccessibilityMonitoringService.getInstance() == null) {
             waitForAccessibilityService(0);
             return;
@@ -877,11 +909,16 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
 
     /** Launches an external file-plugin activity; result goes to cb (may be null). */
     public void launchExternalFile(Intent intent, Consumer<ActivityResult> cb) {
+        if (pendingExternalFile != null) {
+            if (cb != null) cb.accept(null);
+            return;
+        }
         try {
             pendingExternalFile = cb;
             externalFileLauncher.launch(intent);
         } catch (Exception ignored) {
             pendingExternalFile = null;
+            if (cb != null) cb.accept(null);
         }
     }
 
@@ -899,21 +936,31 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
 
     /** Launches an external APK-plugin activity; result goes to cb (may be null). */
     public void launchExternalApk(Intent intent, Consumer<ActivityResult> cb) {
+        if (pendingExternalApk != null) {
+            if (cb != null) cb.accept(null);
+            return;
+        }
         try {
             pendingExternalApk = cb;
             externalApkLauncher.launch(intent);
         } catch (Exception ignored) {
             pendingExternalApk = null;
+            if (cb != null) cb.accept(null);
         }
     }
 
     /** Launches an external setting config activity; result goes to cb (may be null). */
     public void launchExternalSetting(Intent intent, Consumer<ActivityResult> cb) {
+        if (pendingExternalSetting != null) {
+            if (cb != null) cb.accept(null);
+            return;
+        }
         try {
             pendingExternalSetting = cb;
             externalSettingLauncher.launch(intent);
         } catch (Exception ignored) {
             pendingExternalSetting = null;
+            if (cb != null) cb.accept(null);
         }
     }
 
@@ -929,40 +976,10 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         }});
 
     private void setupSystemBars() {
-        // Global insets are applied in BaseActivity.
-
-
-        boolean lightBars;
-        String pluginId = ThemeRegistry.getCurrentId(this);
-        if (pluginId == null || BuiltInThemes.SYSTEM_DEFAULT_ID.equals(pluginId)) {
-            lightBars = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
-                    == Configuration.UI_MODE_NIGHT_NO;
-        } else {
-            lightBars = BuiltInThemes.LIGHT_ID.equals(pluginId) || theme == R.style.Theme_MyApp_Light;
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            int surfaceColor = BuiltInThemes.BLACK_ID.equals(pluginId) ? Color.BLACK : MaterialColors.getColor(this, com.google.android.material.R.attr.colorSurface, Color.TRANSPARENT);
-            getWindow().setStatusBarColor(surfaceColor);
-            // Light navigation icons are only renderable on API 26+ (flag) and
-            // reliably on 27+; below that a surface-colored bar shows white
-            // icons on white, so use a dark bar to keep the buttons visible.
-            boolean lightNavSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1;
-            if (lightBars && !lightNavSupported) {
-                getWindow().setNavigationBarColor(MaterialColors.getColor(this,
-                        com.google.android.material.R.attr.colorOnSurface, Color.BLACK));
-            } else {
-                getWindow().setNavigationBarColor(surfaceColor);
-            }
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M && lightBars) {
-                // Old devices can't render dark status bar icons; use a dark bar so icons stay visible
-                int darkBar = MaterialColors.getColor(this, android.R.attr.colorPrimary, surfaceColor);
-                getWindow().setStatusBarColor(darkBar);
-                getWindow().setNavigationBarColor(darkBar);
-            }
-        }
-        WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
-        controller.setAppearanceLightStatusBars(lightBars);
-        controller.setAppearanceLightNavigationBars(lightBars);
+        // Global insets are applied in BaseActivity; status/navigation bar
+        // tinting and light-icon appearance come from the shared ThemeRegistry
+        // implementation so every activity renders bars identically.
+        ThemeRegistry.applySystemBars(this);
     }
 
     /**
@@ -995,9 +1012,9 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         // BaseActivity applied the ThemeRegistry plugin; sync legacy fields for
         // status-bar tinting, icon colors and intent extras during transition.
         theme = ThemeRegistry.currentStyleRes(this);
-        systemTheme = BuiltInThemes.SYSTEM_DEFAULT_ID.equals(ThemeRegistry.getCurrentId(this));
+        systemTheme = BuiltInThemes.SYSTEM_DEFAULT_ID.equals(ThemeRegistry.appliedBaseId(this));
         SharedPreferences settings = PreferenceManager.getDefaultSharedPreferences(this);
-        ShizukuFileOps.init(this);
+        PrivilegeManager.Shizuku.init(this);
         DirSizeCache.init(this);
         // Logcat capture is opt-in at app start; opening the Logcat screen
         // always starts it regardless of this preference.
@@ -1008,8 +1025,8 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         if (UiPrefs.folderSizeMode(this) != UiPrefs.FOLDER_SIZE_NONE) {
             DirSizeCache.preload();
         }
-        // Applies the custom app dir to REAndroid's framework loader before
-        // any decode/build can read the default location.
+        // Point REAndroid at private framework storage before any decode/build
+        // can read the default location.
         UiPrefs.frameworkDir(this);
         // PrivilegeManager.shizuku().warmUp() does binder IPC: deferred to runWhenIdle below,
         // never on the cold-start critical path.
@@ -1062,6 +1079,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
 
         handler = new Handler(Looper.getMainLooper());
         drawerLayout = findViewById(R.id.drawer_layout);
+        batteryMonitorText = findViewById(R.id.batteryMonitorText);
         View sidebarDrawer = findViewById(R.id.sidebar_drawer);
 
         if (sidebarDrawer.getBackground() instanceof GradientDrawable sidebarBackground) {
@@ -1099,6 +1117,8 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             @Override
             public void onDrawerOpened(View drawerView) {
                 if (drawerView.getId() == R.id.right_menu_drawer) {
+                    isRightDrawerOpen = true;
+                    startBatteryMonitor();
                     refreshRightMenuDrawer();
                     return;
                 }
@@ -1118,7 +1138,10 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
 
             @Override
             public void onDrawerClosed(View drawerView) {
-                if (drawerView.getId() == R.id.sidebar_drawer) {
+                if (drawerView.getId() == R.id.right_menu_drawer) {
+                    isRightDrawerOpen = false;
+                    stopBatteryMonitor();
+                } else if (drawerView.getId() == R.id.sidebar_drawer) {
                     isSidebarDrawerOpen = false;
                 }
             }
@@ -1177,7 +1200,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         uiHelper = new UIHelper(this);
 
         logEnabled = settings.getBoolean("logEnabled", false);
-        systemTheme = BuiltInThemes.SYSTEM_DEFAULT_ID.equals(ThemeRegistry.getCurrentId(this));
+        systemTheme = BuiltInThemes.SYSTEM_DEFAULT_ID.equals(ThemeRegistry.appliedBaseId(this));
         String homeDir1Path = settings.getString("home1", null);
         homeDir1 = TextUtils.isEmpty(homeDir1Path) ? Environment.getExternalStorageDirectory() : new File(homeDir1Path);
         String homeDir2Path = settings.getString("home2", null);
@@ -1254,7 +1277,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                             if (!canOpen) {
                                 try {
                                     String abs = inputPath.getAbsolutePath();
-                                    if (PrivilegeManager.Files.exists(this, abs) && RootManager.getInstance(this).isDirectory(abs)) {
+                                    if (PrivilegeManager.Files.exists(this, abs) && PrivilegeManager.Files.isDirectory(this, abs)) {
                                         canOpen = true;
                                     }
                                 } catch (Exception ignored) {
@@ -1429,17 +1452,8 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
 
             View moreOptionsMenu = findViewById(R.id.moreOptionsMenu);
             moreOptionsMenu.setOnLongClickListener(this::showMsgOnLongPress);
-            moreOptionsMenu.setOnClickListener(v -> {
-                if (drawerLayout != null) {
-                    if (drawerLayout.isDrawerOpen(GravityCompat.END)) {
-                        drawerLayout.closeDrawer(GravityCompat.END);
-                    } else {
-                        // Open first, build after: drawer animation must not wait on view building.
-                        drawerLayout.openDrawer(GravityCompat.END);
-                        refreshRightMenuDrawer();
-                    }
-                }
-            });
+            moreOptionsMenu.setOnClickListener(v -> toggleRightMenuDrawer());
+            setupPluginToolbarButton();
 
             View upButton = findViewById(R.id.upButton);
             upButton.setOnLongClickListener(this::showMsgOnLongPress);
@@ -1466,6 +1480,13 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 // it ships GONE so building it eagerly only delayed first frame.
                 setupNavigationButtons();
                 refreshSidebar(getSidebarSectionOrder());
+                // Main UI is attached: fire the once-per-process launch event
+                // (guard lives in PluginEvents) and evaluate the toolbar hook.
+                try {
+                    PluginEvents.appLaunched(getApplicationContext());
+                } catch (Exception ignored) {
+                }
+                refreshPluginToolbarButton();
                 boolean restored = false;
                 if (TextUtils.isEmpty(locate) && startupState != null
                         && (startupState.containsKey("pane1_path") || startupState.containsKey("pane2_path"))) {
@@ -1668,6 +1689,32 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         }
     }
 
+    private void toggleRightMenuDrawer() {
+        if (drawerLayout == null) return;
+        if (drawerLayout.isDrawerOpen(GravityCompat.END)) {
+            drawerLayout.closeDrawer(GravityCompat.END);
+            isRightDrawerOpen = false;
+            stopBatteryMonitor();
+        } else {
+            // Open first, build after: drawer animation must not wait on view building.
+            drawerLayout.openDrawer(GravityCompat.END);
+            isRightDrawerOpen = true;
+            startBatteryMonitor();
+            refreshRightMenuDrawer();
+        }
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_MENU) {
+            if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
+                toggleRightMenuDrawer();
+            }
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
         if (isBookmarksDrawerOpen && ev.getAction() == MotionEvent.ACTION_DOWN) {
@@ -1702,29 +1749,34 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 if (filterBar != null) filterBar.setText("");
             } else {
                 RecyclerView.Adapter a = getCurrentPane().getAdapter();
+                boolean navigateOnBack = PreferenceManager.getDefaultSharedPreferences(this)
+                        .getBoolean("back_navigates_folders", true);
                 if(a instanceof MainFilesArrayAdapter adapter) {
                     if (adapter.isMultiSelectMode()) adapter.clearSelection();
                     else if (adapter.isSearchResultsMode()) {
                         clearSearchResults(adapter.pane1);
                     } else {
-                        boolean handled = adapter.goUpOnBack();
-                        if (!handled) {
+                        boolean handled = navigateOnBack && adapter.goUpOnBack();
+                        if (!handled && navigateOnBack) {
                             handled = navigateBack(adapter.pane1);
                         }
-                        if (!handled) {
-                            if (isBackPressedToExit) {
-                                handler.removeCallbacks(resetExitPrompt);
-                                finishAffinity();
-                            } else {
-                                isBackPressedToExit = true;
-                                Extensions.showMessage(this, rss.getString(R.string.press_back_again_to_exit));
-                                handler.postDelayed(resetExitPrompt, 2000);
-                            }
-                        }
+                        if (!handled) handleBackToExit();
                     }
-                } else if (a instanceof RemoteFilesArrayAdapter remote) remote.goUp();
+                } else if (!navigateOnBack) handleBackToExit();
+                else if (a instanceof RemoteFilesArrayAdapter remote) remote.goUp();
                 else ftp.ftpParent(lastPaneSelected == 1);
             }
+        }
+    }
+
+    private void handleBackToExit() {
+        if (isBackPressedToExit) {
+            handler.removeCallbacks(resetExitPrompt);
+            finishAffinity();
+        } else {
+            isBackPressedToExit = true;
+            Extensions.showMessage(this, rss.getString(R.string.press_back_again_to_exit));
+            handler.postDelayed(resetExitPrompt, 2000);
         }
     }
 
@@ -1821,7 +1873,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             clearGreen(pane1);
             if (!pane1) clearDiffColors();
         }
-        File[] files = listPlainFolder(folder, pane1);
+        File[] files = listPlainFolder(folder, pane1, pane1 ? paneLoadGen1 : paneLoadGen2);
         if (files == null) return;
         Arrays.sort(files);
         sortFiles(files, folder.getPath());
@@ -2001,14 +2053,27 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
      * @return the unsorted listing, or null when the folder cannot be listed
      *         (the user has already been notified in that case).
      */
-    private File[] listPlainFolder(File folder, boolean pane1) {
-        boolean shizukuDir = ShizukuFile.isAndroidDataPath(folder);
+    private File[] listPlainFolder(File folder, boolean pane1, long generation) {
+        boolean shizukuDir = PrivilegeManager.Shizuku.isAndroidDataPath(folder);
         File[] files = null;
         String folderPath = folder.getAbsolutePath();
-        boolean rootListingPath = "/".equals(folderPath) || RootManager.isRootOnlyPath(folderPath);
+        boolean rootListingPath = "/".equals(folderPath) || PathGuards.isRootOnlyPath(folderPath);
         if (rootListingPath && PrivilegeManager.Files.active(this) == PrivilegeManager.Backend.ROOT && PrivilegeManager.Files.fileOpsOn(this)) {
             files = PrivilegeManager.Files.listWithStat(this, folder.getAbsolutePath());
             if (files != null) files = Arrays.stream(files).filter(this::isNotHidden).toArray(File[]::new);
+        }
+        if (files == null && shizukuDir && PrivilegeManager.Files.active(this) == PrivilegeManager.Backend.SHIZUKU) {
+            // Scoped storage can return a nonempty but incomplete listing (for
+            // example only this app's own directory), so do not wait for the
+            // normal listing to be empty before asking the selected backend.
+            File[] listed = PrivilegeManager.Shizuku.tryList(this, folder);
+            if (listed != null) files = Arrays.stream(listed).filter(this::isNotHidden).toArray(File[]::new);
+        }
+        if (files == null && folder instanceof io.github.abdurazaaqmohammed.privilege.internal.ShizukuFile) {
+            // File.listFiles(FileFilter) recreates plain Files and discards the
+            // Shizuku listing's cached directory/type metadata.
+            File[] listed = folder.listFiles();
+            if (listed != null) files = Arrays.stream(listed).filter(this::isNotHidden).toArray(File[]::new);
         }
         if (files == null) files = folder.listFiles(this::isNotHidden);
         // A folder the app cannot read may still be listable (read-only) through the shell:
@@ -2018,14 +2083,16 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         // the contents rather than the folder really being empty).
         boolean appListingIncomplete = files == null || (files.length == 0 && !canWriteNormally(folder));
         if (appListingIncomplete) {
-            File[] viaShizuku = ShizukuFile.tryList(this, folder);
-            if (viaShizuku != null && (viaShizuku.length > 0 || files == null)) files = viaShizuku;
+            File[] viaShizuku = PrivilegeManager.Shizuku.tryList(this, folder);
+            if (viaShizuku != null && (viaShizuku.length > 0 || files == null)) {
+                files = Arrays.stream(viaShizuku).filter(this::isNotHidden).toArray(File[]::new);
+            }
         }
         if (files == null || (files.length == 0 && appListingIncomplete)) {
             boolean elevated = PrivilegeManager.Files.fileOpsOn(this);
             if (!elevated) {
                 try {
-                    elevated = RootPermissionHelper.hasElevatedShell(this);
+                    elevated = PrivilegeManager.Permissions.hasElevatedShell(this);
                 } catch (Exception ignored) {
                 }
             }
@@ -2039,8 +2106,8 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 }
                 if ((files == null || files.length == 0) && (shizukuDir || rootListingPath || !folder.canRead())) {
                     try {
-                        if (RootManager.getInstance(this).isRootAvailable()) {
-                            File[] directRoot = RootManager.getInstance(this).listRootFilesWithStat(folderPath);
+                        if (PrivilegeManager.Root.isRootAvailable(this)) {
+                            File[] directRoot = PrivilegeManager.Root.listRootFilesWithStat(this, folderPath);
                             if (directRoot != null) {
                                 directRoot = Arrays.stream(directRoot).filter(this::isNotHidden).toArray(File[]::new);
                                 if (directRoot.length > 0 || files == null) files = directRoot;
@@ -2050,8 +2117,8 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 }
             } else {
                 try {
-                    if (RootManager.getInstance(this).isRootAvailable()) {
-                        File[] directRoot = RootManager.getInstance(this).listRootFilesWithStat(folderPath);
+                    if (PrivilegeManager.Root.isRootAvailable(this)) {
+                        File[] directRoot = PrivilegeManager.Root.listRootFilesWithStat(this, folderPath);
                         if (directRoot != null) {
                             directRoot = Arrays.stream(directRoot).filter(this::isNotHidden).toArray(File[]::new);
                             if (directRoot.length > 0 || files == null) files = directRoot;
@@ -2061,10 +2128,10 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             }
             if (files == null && shizukuDir && PrivilegeManager.Files.active(this) != PrivilegeManager.Backend.ROOT) {
                 boolean rootAvailable = false;
-                try { rootAvailable = RootManager.getInstance(this).isRootAvailable(); } catch (Exception ignored) {}
+                try { rootAvailable = PrivilegeManager.Root.isRootAvailable(this); } catch (Exception ignored) {}
                 if (!rootAvailable) runOnUiThread(() -> {
                     try {
-                        showShizukuGuideOnce(folder, pane1);
+                        if (isNetworkPaneLoadCurrent(pane1, generation)) showShizukuGuideOnce(folder, pane1);
                     } catch (Exception ignored) {
                     }
                 });
@@ -2081,13 +2148,16 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                     }
                     if (fallback != null && (fallback.exists() || PrivilegeManager.Files.exists(this, fallback.getAbsolutePath())) && !fallback.equals(folder)) {
                         final File validFallback = fallback;
-                        runOnUiThread(() -> loadFolderInPaneAsync(validFallback, pane1, false));
+                        runOnUiThread(() -> {
+                            if (isNetworkPaneLoadCurrent(pane1, generation)) loadFolderInPaneAsync(validFallback, pane1, false);
+                        });
                         return null;
                     }
                 }
                 runOnUiThread(() -> {
                     try {
-                        Extensions.showMessage(this, getString(R.string.open_folder_failed, folder.getName()));
+                        if (isNetworkPaneLoadCurrent(pane1, generation))
+                            Extensions.showMessage(this, getString(R.string.open_folder_failed, folder.getName()));
                     } catch (Exception ignored) {
                     }
                 });
@@ -2197,6 +2267,18 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             });
         } else buildButton.setVisibility(View.GONE);
 
+        // Build and attach the replacement before publishing its path. If
+        // adapter creation fails, the old listing and its path stay together.
+        RecyclerView pane = findViewById(pane1 ? R.id.listViewPane1 : R.id.listViewPane2);
+        File parent = BootInspectManager.getParentOrImageOrigin(folder);
+        if (parent == null || parent.equals(folder.getParentFile())) {
+            File imgParent = SystemImageMountManager.getParentOrImageOrigin(folder);
+            if (imgParent != null) parent = imgParent;
+        }
+        if (parent == null) parent = folder;
+        MainFilesArrayAdapter adapter = new MainFilesArrayAdapter(this, files, parent, pane1, false, null);
+        pane.setAdapter(adapter);
+
         if (pane1) {
             currentPane1Files = files;
             pane1Folder = folder;
@@ -2211,15 +2293,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             }
         }
         if (pane1 == (lastPaneSelected == 1)) setCurrentFolder(folder, files);
-        RecyclerView pane = findViewById(pane1 ? R.id.listViewPane1 : R.id.listViewPane2);
-        File parent = BootInspectManager.getParentOrImageOrigin(folder);
-        if (parent == null || parent.equals(folder.getParentFile())) {
-            File imgParent = SystemImageMountManager.getParentOrImageOrigin(folder);
-            if (imgParent != null) parent = imgParent;
-        }
-        if (parent == null) parent = folder;
-        MainFilesArrayAdapter adapter = new MainFilesArrayAdapter(this, files, parent, pane1, false, null);
-        pane.setAdapter(adapter);
         
         try {
             SharedPreferences settings = PreferenceManager.getDefaultSharedPreferences(this);
@@ -2273,9 +2346,9 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             File actualZip = zipFile;
             if (actualZip != null && (!actualZip.canRead() || !actualZip.exists())) {
                 try {
-                    if (io.github.abdurazaaqmohammed.privilege.impl.AccessManager.fileOpsOn(this)
-                            || io.github.abdurazaaqmohammed.privilege.impl.RootManager.getInstance(this).isRootAvailable()) {
-                        File staged = io.github.abdurazaaqmohammed.privilege.impl.RootStaging.stageForRead(this, zipFile.getAbsolutePath());
+                    if (io.github.abdurazaaqmohammed.privilege.internal.AccessManager.fileOpsOn(this)
+                            || io.github.abdurazaaqmohammed.privilege.internal.RootManager.getInstance(this).isRootAvailable()) {
+                        File staged = io.github.abdurazaaqmohammed.privilege.internal.RootStaging.stageForRead(this, zipFile.getAbsolutePath());
                         noteArchiveParent(staged, zipFile, "");
                         actualZip = staged;
                     }
@@ -2538,8 +2611,12 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         listingExecutor.execute(() -> {
             final File[] files;
             try {
-                files = listPlainFolder(folder, pane1);
-            } catch (Exception ignored) {
+                files = listPlainFolder(folder, pane1, gen);
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (!isFinishing() && !isDestroyed() && gen == (pane1 ? paneLoadGen1 : paneLoadGen2))
+                        new ErrorUtil(this).showError(e);
+                });
                 return;
             }
             if (files == null) return;
@@ -2553,7 +2630,8 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                     if (isFinishing() || isDestroyed()) return;
                     if (gen != (pane1 ? paneLoadGen1 : paneLoadGen2)) return;
                     bindListedFolder(folder, files, pane1, addToHistory);
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    new ErrorUtil(this).showError(e);
                     return;
                 }
                 if (saved != null) restorePaneScroll(pane1, saved);
@@ -2686,6 +2764,132 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         return false;
     }
 
+    // ---------- native toolbar.actions hook surface ----------
+
+    /** Programmatic top-bar button hosting the generic toolbar.actions hook. */
+    private ImageView pluginToolbarButton;
+
+    /**
+     * Adds the native plugin-actions button to the top toolbar: metrics
+     * identical to the more-options icon (44dp, 10dp padding), inserted
+     * immediately before it so existing icons are never moved, restyled or
+     * removed. Ships GONE; {@link #refreshPluginToolbarButton()} makes it
+     * visible only when toolbar.actions hook entries exist, so hosts without
+     * such plugins render the toolbar exactly as before.
+     */
+    private void setupPluginToolbarButton() {
+        try {
+            LinearLayout topBar = findViewById(R.id.topBar);
+            View moreOptions = findViewById(R.id.moreOptionsMenu);
+            if (topBar == null || moreOptions == null || pluginToolbarButton != null) return;
+            float density = getResources().getDisplayMetrics().density;
+            ImageView button = new ImageView(this);
+            button.setDuplicateParentStateEnabled(false);
+            int pad = (int) (10 * density + 0.5f);
+            button.setPadding(pad, pad, pad, pad);
+            button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+            TypedValue outValue = new TypedValue();
+            getTheme().resolveAttribute(android.R.attr.selectableItemBackground, outValue, true);
+            if (outValue.resourceId != 0) button.setBackgroundResource(outValue.resourceId);
+            button.setImageResource(R.drawable.tools_24px);
+            button.setContentDescription(getString(R.string.plugin_hook_actions));
+            button.setVisibility(View.GONE);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    (int) (44 * density + 0.5f), (int) (44 * density + 0.5f));
+            int index = topBar.indexOfChild(moreOptions);
+            if (index < 0) index = topBar.getChildCount();
+            topBar.addView(button, index, lp);
+            button.setOnClickListener(v -> showToolbarActionsMenu(v));
+            button.setOnLongClickListener(this::showMsgOnLongPress);
+            pluginToolbarButton = button;
+        } catch (Exception ignored) {
+            pluginToolbarButton = null;
+        }
+    }
+
+    /**
+     * Visibility refresh driven off the UI thread: discovery goes through the
+     * parent registry (cached, bounded, PackageManager only on a worker), then
+     * the view update posts back to the main thread. Called from onResume so
+     * installs/uninstalls are picked up when the host is shown again.
+     */
+    public void refreshPluginToolbarButton() {
+        new Thread(() -> {
+            final boolean hasEntries;
+            try {
+                hasEntries = !HookRegistry.visibleEntries(this,
+                        PluginContracts.HOOK_TOOLBAR_ACTIONS).isEmpty();
+            } catch (Exception e) {
+                return;
+            }
+            handler.post(() -> {
+                try {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (pluginToolbarButton == null) setupPluginToolbarButton();
+                    if (pluginToolbarButton != null) {
+                        pluginToolbarButton.setVisibility(
+                                hasEntries ? View.VISIBLE : View.GONE);
+                    }
+                } catch (Exception ignored) {
+                }
+            });
+        }, "plugin-toolbar-lookup").start();
+    }
+
+    /**
+     * Native popup listing toolbar.actions hook entries. Order, hiding and
+     * disabled-package filtering already come from the parent registry, so the
+     * popup only dedups by stable id and dispatches via
+     * {@link ExternalActions#intent} (hook's own public action plus
+     * plugin/hook/contract extras — never raw paths or legacy string actions).
+     */
+    private void showToolbarActionsMenu(View anchor) {
+        try {
+            List<ExternalActions.Entry> entries =
+                    HookRegistry.visibleEntries(this, PluginContracts.HOOK_TOOLBAR_ACTIONS);
+            if (entries == null || entries.isEmpty()) return;
+            final List<ExternalActions.Entry> shown = new ArrayList<>();
+            Set<String> seen = new HashSet<>();
+            for (ExternalActions.Entry entry : entries) {
+                if (entry == null || entry.id == null || entry.plugin == null) continue;
+                if (!seen.add(entry.id)) continue;
+                shown.add(entry);
+            }
+            if (shown.isEmpty()) return;
+            PopupMenu popup = new PopupMenu(this, anchor);
+            Menu menu = popup.getMenu();
+            for (int i = 0; i < shown.size(); i++) {
+                ExternalActions.Entry entry = shown.get(i);
+                String label = entry.title == null || entry.title.isEmpty()
+                        ? entry.id : entry.title;
+                final int index = i;
+                MenuItem item = menu.add(0, i, i, label);
+                item.setOnMenuItemClickListener(
+                        menuItem -> {
+                            dispatchHookEntry(shown.get(index));
+                            return true;
+                        });
+            }
+            popup.show();
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Consented launch of one hook entry; optional theme apply on its result. */
+    private void dispatchHookEntry(ExternalActions.Entry entry) {
+        if (entry == null || entry.plugin == null) return;
+        try {
+            Intent intent = ExternalActions.intent(this, entry, PluginContracts.ACTION_HOOK);
+            PluginTrust.ensureTrusted(this, entry.plugin, () ->
+                    launchExternalFile(intent, result -> {
+                        if (result != null && result.getResultCode() == RESULT_OK) {
+                            PluginThemeRequests.handle(this, entry, result.getData());
+                        }
+                    }));
+        } catch (Exception ignored) {
+        }
+    }
+
     public void reloadCurrentFolder() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             handler.post(this::reloadCurrentFolder);
@@ -2717,7 +2921,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             if (currentFolder != null && FileIconLoader.isUserStorage(currentFolder.getAbsolutePath())) {
                 DirSizeCache.invalidatePrefix(currentFolder);
             }
-            RootManager.getInstance(this).invalidateListCache();
+            PrivilegeManager.Root.invalidateListCache(this);
         } catch (Exception ignored) { }
         reloadOnePane(pane1, false);
         reloadOnePane(!pane1, false);
@@ -2916,7 +3120,9 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 }
             }
             if (minPos != Integer.MAX_VALUE) {
-                lm.scrollToPositionWithOffset(minPos, 0);
+                int itemHeight = pane.getChildCount() > 0 ? pane.getChildAt(0).getHeight() : (int) (pane.getResources().getDisplayMetrics().density * 56);
+                int centerOffset = Math.max(0, (pane.getHeight() - itemHeight) / 2);
+                lm.scrollToPositionWithOffset(minPos, centerOffset);
             }
         } catch (Exception ignored) {
         }
@@ -3032,7 +3238,9 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 if (!(adapter instanceof MainFilesArrayAdapter filesAdapter)) return;
                 int pos = filesAdapter.findPositionByName(name);
                 if (pos < 0) return;
-                lm.scrollToPositionWithOffset(pos, 0);
+                int itemHeight = pane.getChildCount() > 0 ? pane.getChildAt(0).getHeight() : (int) (pane.getResources().getDisplayMetrics().density * 56);
+                int centerOffset = Math.max(0, (pane.getHeight() - itemHeight) / 2);
+                lm.scrollToPositionWithOffset(pos, centerOffset);
 
                 // Single Green Flash: ON
                 markGreen(pane1, name);
@@ -3169,23 +3377,34 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             RecyclerView pane = findViewById(pane1 ? R.id.listViewPane1 : R.id.listViewPane2);
             if (pane == null) return;
             RecyclerView.Adapter<?> adapter = pane.getAdapter();
+            // The reload below rebuilds the adapter from the raw listing; if a
+            // filter is active it must be re-applied once the new adapter is
+            // bound, otherwise the filter box keeps its text but nothing is
+            // filtered (seen after returning to the app from another one).
+            Runnable afterBind = () -> {
+                if (saved != null) restorePaneScroll(pane1, saved);
+                try {
+                    sortFilter.applyFilterToPaneIfAny(pane1);
+                } catch (Exception ignored) {
+                }
+            };
             if (adapter instanceof MainFilesArrayAdapter filesAdapter) {
                 if (filesAdapter.isInZip) {
                     File zipFile = pane1 ? pane1Folder : pane2Folder;
                     if (zipFile == null) return;
                     String zipPath = filesAdapter.currentZipPath == null ? "" : filesAdapter.currentZipPath;
-                    loadZipFolderInPane(zipFile, zipPath, pane1, false,
-                            saved != null ? () -> restorePaneScroll(pane1, saved) : null);
+                    loadZipFolderInPane(zipFile, zipPath, pane1, false, afterBind);
                     return;
                 }
                 File folder = pane1 ? pane1Folder : pane2Folder;
                 if (folder == null) return;
-                loadFolderInPaneAsync(folder, pane1, false,
-                        saved != null ? () -> restorePaneScroll(pane1, saved) : null);
+                loadFolderInPaneAsync(folder, pane1, false, afterBind);
             } else if (adapter instanceof RemoteFilesArrayAdapter remote) {
                 loadFolderInPane(remote.folder, pane1, false);
+                sortFilter.applyFilterToPaneIfAny(pane1);
             } else if (adapter instanceof FtpFilesArrayAdapter) {
                 reloadPane(pane1, preserveScroll);
+                sortFilter.applyFilterToPaneIfAny(pane1);
             }
             // No adapter yet (cold start): nothing to refresh.
         } catch (Exception ignored) {
@@ -3193,8 +3412,9 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     }
 
     public void setCurrentFolder(File curr, File[] files) {
+        final long headerGeneration = folderHeaderGeneration.incrementAndGet();
         if (files == null) {
-            updateFolderCount(0, 0, curr);
+            updateFolderCount(0, 0, curr, headerGeneration);
             return;
         }
         // Count from the already-listed array (root listings carry
@@ -3229,11 +3449,11 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 }
             }
             int listed = files.length - (skipFirst ? 1 : 0);
-            updateFolderCount(foldersCount, listed - foldersCount, folder);
+            updateFolderCount(foldersCount, listed - foldersCount, folder, headerGeneration);
         });
     }
 
-    private void updateFolderCount(int foldersCount, int totalCount, File curr) {
+    private void updateFolderCount(int foldersCount, int totalCount, File curr, long headerGeneration) {
         TextView currentFolderPath = findViewById(R.id.currentFolderPath);
         final int finalFoldersCount = foldersCount;
         final int finalTotalCount = totalCount;
@@ -3242,6 +3462,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 : (curr instanceof FTPFileWrapper ftpFolder ? ftpFolder.displayPath()
                 : (curr instanceof SafFile ? ((SafFile) curr).getDisplayPath() : curr.getPath())));
         handler.post(() -> {
+            if (headerGeneration != folderHeaderGeneration.get()) return;
             currentFolderPath.setText(path);
             uiHelper.scrollTextView(currentFolderPath);
             this.<TextView>findViewById(R.id.folderCount)
@@ -3287,6 +3508,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     }
 
     public void setCurrentFolder(String path, List<?> files) {
+        final long headerGeneration = folderHeaderGeneration.incrementAndGet();
         new Thread(() -> {
 
             //CollectionsUtils.removeIf(files, (Predicate<Object>) o -> o instanceof ZipEntryInfo && ((ZipEntryInfo) o).isDirectory());
@@ -3302,6 +3524,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             }
             int finalFoldersCount = foldersCount;
             handler.post(() -> {
+                if (headerGeneration != folderHeaderGeneration.get()) return;
                 TextView currentFolderPath = findViewById(R.id.currentFolderPath);
                 currentFolderPath.setText(path);
                 uiHelper.scrollTextView(currentFolderPath);
@@ -3313,6 +3536,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     }
 
     public void setCurrentFolderFromSelected(File curr, Set<File> files) {
+        folderHeaderGeneration.incrementAndGet();
         TextView currentFolderPath = findViewById(R.id.currentFolderPath);
         currentFolderPath.setText(SafFile.displayPathOf(curr));
         uiHelper.scrollTextView(currentFolderPath);
@@ -3325,6 +3549,26 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                         .append(files.size() - foldersCount));
     }
 
+    private void checkPendingEditorResult(Intent intent) {
+        if (intent != null && intent.hasExtra("pending_editor_request")) {
+            int req = intent.getIntExtra("pending_editor_request", -1);
+            int code = intent.getIntExtra("pending_editor_code", RESULT_CANCELED);
+            Intent data = intent.getParcelableExtra("pending_editor_data");
+            intent.removeExtra("pending_editor_request");
+            intent.removeExtra("pending_editor_code");
+            intent.removeExtra("pending_editor_data");
+            if (req >= 0) {
+                EditorTasks.getAndClearPendingResult();
+                handler.post(() -> dispatchEditorResult(req, code, data));
+                return;
+            }
+        }
+        EditorTasks.Result res = EditorTasks.getAndClearPendingResult();
+        if (res != null && res.request >= 0) {
+            handler.post(() -> dispatchEditorResult(res.request, res.code, res.data));
+        }
+    }
+
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
@@ -3335,11 +3579,27 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             setIntent(intent);
         } catch (Exception ignored) {
         }
+        checkPendingEditorResult(intent);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        checkPendingEditorResult(getIntent());
+        isBackPressedToExit = false;
+        handler.removeCallbacks(resetExitPrompt);
+        // Toolbar hook entries may have changed (install/uninstall while away).
+        try {
+            refreshPluginToolbarButton();
+        } catch (Exception ignored) {
+        }
+        if (drawerLayout != null && drawerLayout.isDrawerOpen(GravityCompat.END)) {
+            isRightDrawerOpen = true;
+            startBatteryMonitor();
+        } else {
+            isRightDrawerOpen = false;
+            stopBatteryMonitor();
+        }
         CURRENT = new WeakReference<>(this);
         // Pane highlight style may have changed in Settings.
         try {
@@ -3502,6 +3762,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
 
     @Override
     protected void onDestroy() {
+        stopBatteryMonitor();
         // Drop any in-flight background listing so it never touches dead views.
         invalidatePaneLoad(true);
         invalidatePaneLoad(false);
@@ -3544,20 +3805,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
 
     public void showSearchDialog() {
         fileSearch.showSearchDialog();
-    }
-
-    /** Right-menu "Exit": confirm before killing in-flight work. */
-    public void confirmExitApp() {
-        try {
-            dialogUtil.styleAlertDialog(dialogUtil.getDialogBuilder()
-                    .setTitle(R.string.exit)
-                    .setMessage(R.string.exit_confirm_message)
-                    .setPositiveButton(R.string.exit, (dialog, which) -> exitApp())
-                    .setNegativeButton(R.string.cancel, null)
-                    .create());
-        } catch (Exception ignored) {
-            exitApp();
-        }
     }
 
     /**
@@ -3784,6 +4031,94 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     /** Right (more-options) drawer; rows are built by RightMenuController. */
     public void refreshRightMenuDrawer() {
         rightMenu.build();
+    }
+
+    private void startBatteryMonitor() {
+        if (handler != null) {
+            handler.removeCallbacks(batteryTicker);
+            updateBatteryStatus();
+            handler.postDelayed(batteryTicker, 1000);
+        }
+    }
+
+    private void stopBatteryMonitor() {
+        if (handler != null) {
+            handler.removeCallbacks(batteryTicker);
+        }
+    }
+
+    private int readBatteryCurrent(BatteryManager bm, boolean isCharging) {
+        int cur = 0;
+        if (bm != null) {
+            cur = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
+        }
+        if (cur == Integer.MIN_VALUE || cur == 0) {
+            try (BufferedReader reader = new BufferedReader(new FileReader("/sys/class/power_supply/battery/current_now"))) {
+                String line = reader.readLine();
+                if (line != null) {
+                    cur = Integer.parseInt(line.trim());
+                }
+            } catch (Exception ignored) {
+                try (BufferedReader reader = new BufferedReader(new FileReader("/sys/class/power_supply/bms/current_now"))) {
+                    String line = reader.readLine();
+                    if (line != null) {
+                        cur = Integer.parseInt(line.trim());
+                    }
+                } catch (Exception ignored2) {
+                }
+            }
+        }
+        int curMa = Math.abs(cur) > 10000 ? cur / 1000 : cur;
+        return isCharging ? Math.abs(curMa) : -Math.abs(curMa);
+    }
+
+    private void updateBatteryStatus() {
+        if (batteryMonitorText == null) return;
+        try {
+            Intent batteryIntent = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (batteryIntent == null) return;
+
+            int rawTemp = batteryIntent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0);
+            float tempC = rawTemp / 10.0f;
+            if (tempC <= 0.0f) {
+                try (BufferedReader reader = new BufferedReader(new FileReader("/sys/class/power_supply/battery/temp"))) {
+                    String line = reader.readLine();
+                    if (line != null) {
+                        int t = Integer.parseInt(line.trim());
+                        tempC = t > 100 ? t / 10.0f : (float) t;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
+            int voltMv = batteryIntent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0);
+            if (voltMv > 100000) voltMv /= 1000;
+            if (voltMv <= 0) {
+                try (BufferedReader reader = new BufferedReader(new FileReader("/sys/class/power_supply/battery/voltage_now"))) {
+                    String line = reader.readLine();
+                    if (line != null) {
+                        int v = Integer.parseInt(line.trim());
+                        voltMv = v > 100000 ? v / 1000 : v;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
+            int status = batteryIntent.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN);
+            boolean isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL);
+
+            BatteryManager bm = (BatteryManager) getSystemService(BATTERY_SERVICE);
+            int curMa = readBatteryCurrent(bm, isCharging);
+
+            float watts = (Math.abs(curMa) * (voltMv > 0 ? voltMv : 4000)) / 1000000.0f;
+
+            String text = String.format(Locale.US, "%.1f\u00B0C  %d mA (%.1fW)", tempC, curMa, watts);
+            batteryMonitorText.setText(text);
+            if (batteryMonitorText.getVisibility() != View.VISIBLE) {
+                batteryMonitorText.setVisibility(View.VISIBLE);
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     public void showHiddenFilesMenu(View anchor) {

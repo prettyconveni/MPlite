@@ -1,0 +1,24 @@
+<resources>
+    <string name="tools_hub_search">Procurar ferramentas e pacotes</string>
+    <string name="tools_hub_hint">Todas as ferramentas num só lugar. Prima sem soltar numa ferramenta para criar um atalho no ecrã inicial.</string>
+    <string name="tools_hub_summary_compact">%1$d ferramentas · %2$d pacotes instalados</string>
+    <string name="tools_hub_no_results">Nenhuma ferramenta corresponde à pesquisa</string>
+    <string name="tools_hub_download_badge">Transferir</string>
+    <string name="tools_hub_pack_metadata">%1$d ferramentas · v%2$s · %3$s</string>
+    <string name="tools_hub_pack_installed">Instalado</string>
+    <string name="tools_hub_pack_available">Transferência opcional</string>
+    <string name="tools_hub_pack_update_available">Atualização disponível</string>
+    <string name="tools_hub_min_sdk">Requer Android API %1$d ou posterior</string>
+    <string name="tools_hub_install_apk">Instalar pacote a partir de APK</string>
+    <string name="tools_hub_advanced_plugins">Ferramentas avançadas e plugins</string>
+    <string name="tool_requires_root">Esta ferramenta requer acesso root.</string>
+    <string name="tool_extract_subtitle">Explorar aplicações e extrair ficheiros APK</string>
+    <string name="tool_recycle_subtitle">Restaurar ou remover ficheiros eliminados</string>
+    <string name="tool_ftp_subtitle">Partilhar ficheiros na rede local</string>
+    <string name="tool_network_subtitle">Ligações FTP, WebDAV e SMB</string>
+    <string name="tool_layout_subtitle">Inspecionar a aplicação e o esquema no ecrã</string>
+    <string name="tool_color_subtitle">Escolher cores em qualquer ecrã</string>
+    <string name="tool_freestyle_subtitle">Criar e editar composições visuais</string>
+    <string name="screen_ocr_title">Copiar texto do ecrã</string>
+    <string name="screen_ocr_subtitle">OCR offline para ecrãs e imagens</string>
+</resources>

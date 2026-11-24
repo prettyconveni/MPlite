@@ -97,6 +97,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -206,13 +207,18 @@ public final class DexCompareEngine {
          * Rewrites a single line into a form that is stable across compiler
          * optimizations: equivalent opcode encodings ({@code const/4} vs
          * {@code const}, {@code invoke-virtual/range} vs {@code invoke-virtual},
-         * {@code goto/16} vs {@code goto}, …) and compiler-assigned label
-         * numbers ({@code :goto_0} vs {@code :goto_1}) are canonicalized.
+         * {@code goto/16} vs {@code goto}, …), compiler-assigned label
+         * numbers ({@code :goto_0} vs {@code :goto_1}) and compiler-generated
+         * static field default values ({@code = null}, {@code = false}, {@code = 0})
+         * are canonicalized.
          */
         public String canonicalize(String rawLine) {
             if (rawLine == null) return "";
             if (!ignoreOptimizations) return rawLine;
             String line = rawLine.trim();
+            if (line.startsWith(".field")) {
+                line = canonicalizeFieldDefault(line);
+            }
             int end = 0;
             while (end < line.length() && !Character.isWhitespace(line.charAt(end))) end++;
             String opcode = line.substring(0, end);
@@ -221,6 +227,18 @@ public final class DexCompareEngine {
                 line = opcode.substring(0, slash) + line.substring(end);
             }
             return canonicalizeLabels(line);
+        }
+
+        private static String canonicalizeFieldDefault(String line) {
+            int eq = line.lastIndexOf('=');
+            if (eq > 0) {
+                String val = line.substring(eq + 1).trim();
+                if ("null".equals(val) || "false".equals(val) || "0".equals(val) || "0x0".equals(val)
+                        || "0L".equals(val) || "0.0f".equals(val) || "0.0".equals(val) || "0s".equals(val) || "0t".equals(val)) {
+                    return line.substring(0, eq).trim();
+                }
+            }
+            return line;
         }
 
         private static final Set<String> OPCODE_BASES = new HashSet<>(Arrays.asList(
@@ -273,13 +291,17 @@ public final class DexCompareEngine {
 
         /**
          * Compares two whole smali texts under these options: ignored lines are
-         * dropped from both sides, the rest is compared line by line.
+         * dropped from both sides, the rest is compared line by line. With
+         * "ignore optimizations" the comparison also becomes tolerant to the
+         * artifacts compilers leave behind (see
+         * {@link #smaliEqualIgnoringOptimizations}).
          */
         public boolean smaliEqual(String a, String b) {
             if (a == null) a = "";
             if (b == null) b = "";
             if (a.equals(b)) return true;
             if (!any()) return false;
+            if (ignoreOptimizations) return smaliEqualIgnoringOptimizations(a, b);
             List<String> leftSide = significantLines(a);
             List<String> rightSide = significantLines(b);
             if (leftSide.size() != rightSide.size()) return false;
@@ -287,6 +309,72 @@ public final class DexCompareEngine {
                 if (!canonicalize(leftSide.get(i)).equals(canonicalize(rightSide.get(i)))) return false;
             }
             return true;
+        }
+
+        /**
+         * Optimization-tolerant smali comparison. Compiler optimizations move
+         * instructions around and rename registers and labels, so a plain
+         * positional line compare reports every touched method as changed. This
+         * compares method bodies per method signature instead — method ordering
+         * can differ between builds without any real change — and canonicalizes
+         * each line (equivalent opcode encodings, label numbers and register
+         * numbers) before comparing. Everything outside method blocks (class
+         * header, fields, annotations) is compared order-insensitively.
+         */
+        private boolean smaliEqualIgnoringOptimizations(String a, String b) {
+            if (!methodBodies(a).equals(methodBodies(b))) return false;
+            List<String> restA = nonMethodLines(a);
+            List<String> restB = nonMethodLines(b);
+            if (restA.size() != restB.size()) return false;
+            Collections.sort(restA);
+            Collections.sort(restB);
+            return restA.equals(restB);
+        }
+
+        /** Canonical signature of every method block → canonicalized body lines joined with \\n. */
+        private Map<String, String> methodBodies(String smali) {
+            Map<String, String> out = new HashMap<>();
+            if (smali == null) return out;
+            String[] lines = smali.split("\n", -1);
+            String signature = null;
+            StringBuilder body = new StringBuilder();
+            for (String rawLine : lines) {
+                String line = rawLine.trim();
+                if (signature == null) {
+                    if (line.startsWith(".method")) {
+                        signature = line;
+                        body.setLength(0);
+                    }
+                } else {
+                    if (line.startsWith(".end method")) {
+                        out.merge(signature, body.toString(), (x, y) -> x + "\n" + y);
+                        signature = null;
+                    } else if (!line.isEmpty()) {
+                        if (!ignorable(rawLine)) {
+                            body.append(canonicalize(rawLine)).append('\n');
+                        }
+                    }
+                }
+            }
+            return out;
+        }
+
+        /** Canonicalized significant lines outside method blocks (class header, fields, annotations). */
+        private List<String> nonMethodLines(String smali) {
+            List<String> out = new ArrayList<>();
+            if (smali == null) return out;
+            boolean inMethod = false;
+            for (String rawLine : smali.split("\n", -1)) {
+                String line = rawLine.trim();
+                if (inMethod) {
+                    if (line.startsWith(".end method")) inMethod = false;
+                } else if (line.startsWith(".method")) {
+                    inMethod = true;
+                } else if (!ignorable(rawLine)) {
+                    out.add(canonicalize(rawLine));
+                }
+            }
+            return out;
         }
 
         /** Splits smali into lines and drops the ones the options ignore. */

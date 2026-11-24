@@ -1,6 +1,7 @@
 package io.github.abdurazaaqmohammed.feature.system;
 
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.net.Uri;
 import android.os.Bundle;
@@ -44,10 +45,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Locale;
 
+import androidx.preference.PreferenceManager;
+
 import io.github.abdurazaaqmohammed.MPManager.R;
 import io.github.abdurazaaqmohammed.ui.common.util.ThemeDialogs;
+import io.github.abdurazaaqmohammed.ui.main.SidebarAdapter;
 import io.github.abdurazaaqmohammed.plugins.ipc.PluginContracts;
 import io.github.abdurazaaqmohammed.plugins.ipc.PluginHost;
+import io.github.abdurazaaqmohammed.plugins.ipc.PluginHooks;
+import io.github.abdurazaaqmohammed.plugins.ipc.HookRegistry;
+import io.github.abdurazaaqmohammed.plugins.ipc.HookOrder;
 import io.github.abdurazaaqmohammed.plugins.packs.PackCatalog;
 import io.github.abdurazaaqmohammed.plugins.packs.PackDescriptor;
 import io.github.abdurazaaqmohammed.plugins.packs.PackManager;
@@ -258,21 +265,39 @@ public class ToolsHubActivity extends BaseActivity {
                     PluginContracts.ACTION_SETTING_CONFIG,
                     PluginContracts.ACTION_FILE_MENU,
                     PluginContracts.ACTION_EDITOR,
-                    PluginContracts.ACTION_APK};
+                    PluginContracts.ACTION_APK,
+                    PluginContracts.ACTION_HOOK};
             for (String action : actions) {
-                for (PluginHost.ExternalPlugin p : PluginHost.query(this, action)) {
-                    boolean seen = false;
-                    for (PluginHost.ExternalPlugin q : installedExternal) {
-                        if (q.packageName.equals(p.packageName)) {
-                            seen = true;
-                            break;
-                        }
-                    }
-                    if (!seen) installedExternal.add(p);
+                for (PluginHost.ExternalPlugin p : PluginHost.queryIncludingDisabled(this, action)) {
+                    addExternalPlugin(p);
                 }
+            }
+            for (PluginHost.ExternalPlugin receiver : PluginHost.queryEventReceivers(this, true)) {
+                addExternalPlugin(receiver);
             }
         } catch (Exception ignored) {
         }
+    }
+
+    private void addExternalPlugin(PluginHost.ExternalPlugin plugin) {
+        for (PluginHost.ExternalPlugin installed : installedExternal) {
+            if (installed.packageName.equals(plugin.packageName)) return;
+        }
+        installedExternal.add(plugin);
+    }
+
+    private List<String> externalEvents(String packageName) {
+        List<String> events = new ArrayList<>();
+        for (PluginHost.ExternalPlugin receiver : PluginHost.queryEventReceivers(this, true)) {
+            if (!packageName.equals(receiver.packageName)
+                    || !HookRegistry.supportsVersion(receiver)) continue;
+            for (String hook : PluginHooks.parse(
+                    io.github.abdurazaaqmohammed.plugins.ipc.ExternalActions.metaString(
+                            receiver, PluginContracts.META_HOOKS, ""))) {
+                if (PluginHooks.isEvent(hook) && !events.contains(hook)) events.add(hook);
+            }
+        }
+        return events;
     }
 
     private void showExternalDialog(PluginHost.ExternalPlugin ext) {
@@ -308,16 +333,61 @@ public class ToolsHubActivity extends BaseActivity {
             } else {
                 builder.setPositiveButton(R.string.tools_hub_trust, (d, w) -> {
                     String fresh = PluginHost.certDigest(this, ext.packageName);
-                    if (fresh != null) {
+                    if (fresh != null && fresh.equals(digest)) {
                         PluginHost.setTrusted(this, ext.packageName, fresh,
                                 String.valueOf(ext.label), true);
                         rebuildPacks();
                     }
                 });
             }
+            boolean hasHooks = !HookRegistry.packageEntries(this, ext.packageName).isEmpty();
+            List<String> events = externalEvents(ext.packageName);
+            if (hasHooks || !events.isEmpty()) {
+                LinearLayout controls = new LinearLayout(this);
+                controls.setOrientation(LinearLayout.VERTICAL);
+                int padding = Math.round(24 * getResources().getDisplayMetrics().density);
+                controls.setPadding(padding, 0, padding, 0);
+                if (hasHooks) {
+                    MaterialButton actions = new MaterialButton(this);
+                    actions.setText(R.string.plugin_hook_actions);
+                    actions.setOnClickListener(v -> HookOrder.showManager(this, ext.packageName));
+                    controls.addView(actions);
+                }
+                if (!events.isEmpty()) {
+                    MaterialButton notifications = new MaterialButton(this);
+                    notifications.setText(PluginHost.eventsEnabled(this, ext.packageName)
+                            ? R.string.plugin_events_disable : R.string.plugin_events_enable);
+                    notifications.setOnClickListener(v -> showEventConsent(ext, events));
+                    controls.addView(notifications);
+                }
+                builder.setView(controls);
+            }
             builder.show();
         } catch (Exception ignored) {
         }
+    }
+
+    private void showEventConsent(PluginHost.ExternalPlugin ext, List<String> events) {
+        if (PluginHost.eventsEnabled(this, ext.packageName)) {
+            PluginHost.setEventsEnabled(this, ext.packageName, false);
+            rebuildPacks();
+            return;
+        }
+        if (!PluginHost.isTrusted(this, ext.packageName)) {
+            Toast.makeText(this, R.string.plugin_events_trust_first, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String digest = PluginHost.certDigest(this, ext.packageName);
+        new MaterialAlertDialogBuilder(this).setTitle(R.string.plugin_events_enable)
+                .setMessage(getString(R.string.plugin_events_consent,
+                        ext.packageName, String.join(", ", events)))
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                    if (digest != null && digest.equals(PluginHost.certDigest(this, ext.packageName))) {
+                        PluginHost.setEventsEnabled(this, ext.packageName, true, events);
+                        rebuildPacks();
+                    }
+                }).show();
     }
 
     private String shortDigest(String hex) {
@@ -558,12 +628,111 @@ public class ToolsHubActivity extends BaseActivity {
         ToolLauncher.open(this, item.id());
     }
 
-    private void showToolMenu(View anchor, Runnable shortcut) {
+    /** Canonical ids of hub tools the user explicitly added to the sidebar. */
+    private Set<String> addedSidebarTools() {
+        return SidebarToolSelection.sanitizeAdded(PreferenceManager.getDefaultSharedPreferences(this)
+                .getStringSet(SidebarToolSelection.PREF_ADDED_TOOLS, java.util.Collections.emptySet()));
+    }
+
+    private boolean isSidebarAdded(String sidebarId) {
+        return SidebarToolSelection.isAdded(addedSidebarTools(), sidebarId);
+    }
+
+    /** True when the row carries the same hide key organize mode writes. */
+    private boolean isSidebarHidden(String sidebarId) {
+        Set<String> hidden = PreferenceManager.getDefaultSharedPreferences(this)
+                .getStringSet("sidebar_hidden_items", java.util.Collections.emptySet());
+        return hidden != null && hidden.contains(SidebarToolSelection.hiddenKey(sidebarId));
+    }
+
+    private void setHiddenSidebar(String sidebarId, boolean hidden) {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        Set<String> keys = new HashSet<>(prefs.getStringSet(
+                "sidebar_hidden_items", java.util.Collections.emptySet()));
+        String key = SidebarToolSelection.hiddenKey(sidebarId);
+        if (hidden) keys.add(key);
+        else keys.remove(key);
+        prefs.edit().putStringSet("sidebar_hidden_items", keys).apply();
+    }
+
+    private boolean hasExplicitMembership(String sidebarId) {
+        boolean registryTool = ToolRegistry.findById(this, sidebarId) != null;
+        return SidebarToolSelection.membershipIsExplicit(sidebarId, registryTool,
+                registryTool && ToolRegistry.isDefaultSidebarTool(sidebarId));
+    }
+
+    /** The state the sidebar actually renders (membership plus organize hides). */
+    private boolean isSidebarPresent(String sidebarId) {
+        boolean autoShown;
+        if (ToolRegistry.findById(this, sidebarId) != null) {
+            autoShown = ToolRegistry.isDefaultSidebarTool(sidebarId);
+        } else if (sidebarId.startsWith(SidebarAdapter.PACK_TOOL_PREFIX)) {
+            autoShown = PreferenceManager.getDefaultSharedPreferences(this)
+                    .getBoolean("sidebar_show_plugins", false);
+        } else {
+            autoShown = true; // custom rows need explicit adds; extensions always render
+        }
+        return SidebarToolSelection.isRendered(hasExplicitMembership(sidebarId),
+                isSidebarAdded(sidebarId), autoShown, isSidebarHidden(sidebarId));
+    }
+
+    /**
+     * Add/restore: clears the hide key and, for rows whose membership is
+     * explicit (hub-only registry tools, pack and custom tools), keeps/adds
+     * the added id — never a blind toggle.
+     */
+    private void addSidebarTool(String sidebarId) {
+        if (hasExplicitMembership(sidebarId)) {
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+            Set<String> added = addedSidebarTools();
+            if (SidebarToolSelection.ensureAdded(added, sidebarId)) {
+                prefs.edit().putStringSet(SidebarToolSelection.PREF_ADDED_TOOLS, added).apply();
+            }
+        }
+        setHiddenSidebar(sidebarId, false);
+    }
+
+    /**
+     * Remove: hides through the organize-hide key, so the row disappears
+     * regardless of shipped defaults, the plugins setting or pack state;
+     * membership and saved order stay intact for a later restore.
+     */
+    private void removeSidebarTool(String sidebarId) {
+        setHiddenSidebar(sidebarId, true);
+    }
+
+    private void toggleSidebarPresence(String sidebarId) {
+        if (isSidebarPresent(sidebarId)) removeSidebarTool(sidebarId);
+        else addSidebarTool(sidebarId);
+        Extensions.showMessage(this, getString(isSidebarPresent(sidebarId)
+                ? R.string.sidebar_tool_added : R.string.sidebar_tool_removed));
+    }
+
+    /**
+     * Long-press menu on a hub tool card: add/remove the sidebar entry and
+     * (when supported) pin a launcher shortcut. {@code sidebarId} is the
+     * sidebar row id — a canonical registry id, "packtool:<pack>.<tool>",
+     * "custom:<pluginId>" or an extension action id. The label mirrors what
+     * the sidebar renders: an organize-hidden row (or an un-added hub-only
+     * tool) offers Add, a visible row offers Remove.
+     */
+    private void showToolMenu(View anchor, String sidebarId, Runnable shortcut) {
         PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add(R.string.plugin_create_shortcut);
+        if (sidebarId != null) {
+            menu.getMenu().add(0, 1, 0, isSidebarPresent(sidebarId)
+                    ? R.string.sidebar_remove_tool : R.string.sidebar_add_tool);
+        }
+        if (shortcut != null) menu.getMenu().add(0, 2, 1, R.string.plugin_create_shortcut);
         menu.setOnMenuItemClickListener(item -> {
-            shortcut.run();
-            return true;
+            if (item.getItemId() == 1 && sidebarId != null) {
+                toggleSidebarPresence(sidebarId);
+                return true;
+            }
+            if (item.getItemId() == 2 && shortcut != null) {
+                shortcut.run();
+                return true;
+            }
+            return false;
         });
         menu.show();
     }
@@ -636,7 +805,8 @@ public class ToolsHubActivity extends BaseActivity {
                 h.badge.setVisibility(View.GONE);
                 h.card.setOnClickListener(v -> openPackTool(entry.pack, entry.tool));
                 h.card.setOnLongClickListener(v -> {
-                    showToolMenu(v, () -> ToolShortcuts.pin(ToolsHubActivity.this, entry.tool));
+                    showToolMenu(v, SidebarAdapter.PACK_TOOL_PREFIX + entry.pack.id + "." + entry.tool.id,
+                            () -> ToolShortcuts.pin(ToolsHubActivity.this, entry.tool));
                     return true;
                 });
             } else if (holder instanceof ToolViewHolder h && row instanceof SidebarAction extension) {
@@ -646,7 +816,10 @@ public class ToolsHubActivity extends BaseActivity {
                 h.title.setText(extension.title());
                 h.subtitle.setText(extension.id());
                 h.badge.setVisibility(View.GONE);
-                h.card.setOnLongClickListener(null);
+                h.card.setOnLongClickListener(v -> {
+                    showToolMenu(v, extension.id(), null);
+                    return true;
+                });
                 h.card.setOnClickListener(v -> extension.open(ToolsHubActivity.this));
             } else if (holder instanceof ToolViewHolder h && row instanceof ToolPlugin plugin) {
                 h.icon.setImageResource(plugin.iconRes(ToolsHubActivity.this));
@@ -654,7 +827,15 @@ public class ToolsHubActivity extends BaseActivity {
                 h.title.setText(plugin.title(ToolsHubActivity.this));
                 h.subtitle.setText(plugin.subtitle(ToolsHubActivity.this));
                 h.badge.setVisibility(View.GONE);
-                h.card.setOnLongClickListener(null);
+                h.card.setOnLongClickListener(v -> {
+                    showToolMenu(v, SidebarToolSelection.CUSTOM_TOOL_PREFIX + plugin.id(),
+                            () -> ToolShortcuts.pin(ToolsHubActivity.this, new ToolRegistry.ToolItem(
+                                    plugin.id(), plugin.title(ToolsHubActivity.this),
+                                    plugin.subtitle(ToolsHubActivity.this),
+                                    plugin.iconRes(ToolsHubActivity.this),
+                                    plugin.category(ToolsHubActivity.this))));
+                    return true;
+                });
                 h.card.setOnClickListener(v -> startActivity(new Intent(ToolsHubActivity.this, ToolRunnerActivity.class)
                         .putExtra("tool_id", plugin.id()).putExtra("tool_title", plugin.title(ToolsHubActivity.this))));
             } else if (holder instanceof ToolViewHolder h) {
@@ -669,7 +850,7 @@ public class ToolsHubActivity extends BaseActivity {
                 h.badge.setVisibility(needsPack ? View.VISIBLE : View.GONE);
                 h.card.setOnClickListener(v -> openTool(item));
                 h.card.setOnLongClickListener(v -> {
-                    showToolMenu(v, () -> ToolShortcuts.pin(ToolsHubActivity.this, item));
+                    showToolMenu(v, item.id(), () -> ToolShortcuts.pin(ToolsHubActivity.this, item));
                     return true;
                 });
             }

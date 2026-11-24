@@ -18,7 +18,9 @@ public final class ApkMoreMenuOrder {
 
     public static final String SIGN = "sign";
     public static final String OPT = "opt";
+    public static final String AAPT2_OPT = "aapt2_opt";
     public static final String DECOMPILE = "decompile";
+    public static final String JADX_JAVA = "jadx_java";
     public static final String REFACTOR = "refactor";
     public static final String PROTECT = "protect";
     public static final String CLONE = "clone";
@@ -35,12 +37,13 @@ public final class ApkMoreMenuOrder {
     public static final String FLUTTER = "flutter";
     public static final String FRIDA = "frida";
     public static final String JIAGU = "jiagu";
+    public static final String PRIVACY = "privacy";
 
     public static final String[] DEFAULT_ORDER = {
-            SIGN, OPT, DECOMPILE, REFACTOR, PROTECT, CLONE,
+            SIGN, OPT, AAPT2_OPT, DECOMPILE, JADX_JAVA, REFACTOR, PROTECT, CLONE,
             ADD_TOAST, REMOVE_TOASTS, REMOVE_SIG, SIG_HEALTH,
             MANIFEST_TOGGLES, PERMISSIONS, XPOSED_PATCH, MULTIPLEX,
-            IL2CPP, PATCH_LIBS, FLUTTER, FRIDA, JIAGU
+            IL2CPP, PATCH_LIBS, FLUTTER, FRIDA, JIAGU, PRIVACY
     };
 
     public record MenuItem(String id, String label) {}
@@ -115,7 +118,9 @@ public final class ApkMoreMenuOrder {
         switch (id) {
             case SIGN: return context.getString(R.string.sign_apk);
             case OPT: return context.getString(R.string.optimize_apk);
+            case AAPT2_OPT: return context.getString(R.string.aapt2_optimize);
             case DECOMPILE: return context.getString(R.string.decompile_reandroid_apkeditor);
+            case JADX_JAVA: return context.getString(R.string.decompile_to_java_jadx);
             case REFACTOR: return context.getString(R.string.refactor_obfuscated_resource_names);
             case PROTECT: return context.getString(R.string.protect_reandroid_apkeditor);
             case CLONE: return context.getString(R.string.clone_apk);
@@ -132,6 +137,7 @@ public final class ApkMoreMenuOrder {
             case FLUTTER: return context.getString(R.string.flutter_tools);
             case FRIDA: return context.getString(R.string.frida_gadget);
             case JIAGU: return context.getString(R.string.jiagu_unpack);
+            case PRIVACY: return context.getString(R.string.privacy_audit_title);
             default: {
                 for (ApkMoreAction ext : ExtensionRegistry.apkActions()) {
                     if (ext != null && id.equals(ext.id())) {
@@ -153,7 +159,9 @@ public final class ApkMoreMenuOrder {
         switch (id) {
             case SIGN: return R.drawable.baseline_check_circle_24;
             case OPT: return R.drawable.gavel_24px;
+            case AAPT2_OPT: return R.drawable.gavel_24px;
             case DECOMPILE: return R.drawable.code_24px;
+            case JADX_JAVA: return R.drawable.code_24px;
             case REFACTOR: return R.drawable.baseline_drive_file_rename_outline_24;
             case PROTECT: return R.drawable.lock_24px;
             case CLONE: return R.drawable.control_point_duplicate_24px;
@@ -170,6 +178,7 @@ public final class ApkMoreMenuOrder {
             case FLUTTER: return R.drawable.tools_24px;
             case FRIDA: return R.drawable.terminal_24px;
             case JIAGU: return R.drawable.terminal_24px;
+            case PRIVACY: return R.drawable.ic_shield_24;
             default: return R.drawable.baseline_info_24;
         }
     }

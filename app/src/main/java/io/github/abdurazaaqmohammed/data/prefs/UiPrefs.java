@@ -178,12 +178,13 @@ public final class UiPrefs {
     }
 
     /**
-     * Framework resources directory ({@code <app dir>/frameworks}), following the
-     * custom app-path preference. Also points REAndroid's framework loader at
-     * it so decode/build use the same location the app extracts to.
+     * Bundled framework resources belong in private app data, independently of
+     * the user-selected working directory. Decode/build use this same location.
+     * Legacy external copies are left intact; bundled APKs are extracted here
+     * on startup without requiring shared-storage permission.
      */
     public static File frameworkDir(Context context) {
-        File fw = new File(appPathDir(context, defaultAppDir()), "frameworks");
+        File fw = new File(context.getFilesDir(), "frameworks");
         try {
             InternalFrameworks.setAndroidResourceDirectory(fw.getPath());
         } catch (Throwable ignored) {
@@ -275,6 +276,26 @@ public final class UiPrefs {
     public static final int FOLDER_SIZE_USER = 0;
     public static final int FOLDER_SIZE_ALL = 1;
     public static final int FOLDER_SIZE_NONE = 2;
+
+    /** Whether file rows in system (non-user-storage) folders show Unix permissions instead of dates. */
+    public static final String SHOW_FILE_PERMISSIONS_KEY = "show_file_permissions";
+
+    public static boolean showFilePermissions(Context context) {
+        try {
+            return PreferenceManager.getDefaultSharedPreferences(context)
+                    .getBoolean(SHOW_FILE_PERMISSIONS_KEY, false);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static void setShowFilePermissions(Context context, boolean value) {
+        try {
+            PreferenceManager.getDefaultSharedPreferences(context)
+                    .edit().putBoolean(SHOW_FILE_PERMISSIONS_KEY, value).apply();
+        } catch (Exception ignored) {
+        }
+    }
 
     public static int folderSizeMode(Context context) {
         try {

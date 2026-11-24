@@ -77,6 +77,10 @@
                 android:id="@+id/toggle_comment"
                 android:icon="@drawable/ic_hash_mt"
                 android:title="Toggle comment" />
+            <item
+                android:id="@+id/customize_edit_menu"
+                android:icon="@drawable/ic_setting_mt"
+                android:title="@string/customize" />
         </menu>
     </item>
     <item
@@ -93,6 +97,10 @@
                 android:id="@+id/smali2java"
                 android:icon="@drawable/ic_java_mt"
                 android:title="Smali to Java" />
+            <item
+                android:id="@+id/view_smali"
+                android:icon="@drawable/code_24px"
+                android:title="@string/view_smali" />
             <item
                 android:id="@+id/smali_instruction"
                 android:icon="@drawable/ic_instruction_query_mt"

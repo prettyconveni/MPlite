@@ -1,0 +1,24 @@
+<resources>
+    <string name="tools_hub_search">ツールとパックを検索</string>
+    <string name="tools_hub_hint">すべてのツールを一か所に表示します。ツールを長押しするとホーム画面にショートカットを作成できます。</string>
+    <string name="tools_hub_summary_compact">%1$d個のツール · インストール済みパック%2$d個</string>
+    <string name="tools_hub_no_results">一致するツールはありません</string>
+    <string name="tools_hub_download_badge">ダウンロード</string>
+    <string name="tools_hub_pack_metadata">%1$d個のツール · v%2$s · %3$s</string>
+    <string name="tools_hub_pack_installed">インストール済み</string>
+    <string name="tools_hub_pack_available">任意のダウンロード</string>
+    <string name="tools_hub_pack_update_available">更新あり</string>
+    <string name="tools_hub_min_sdk">Android API %1$d以降が必要です</string>
+    <string name="tools_hub_install_apk">APKからパックをインストール</string>
+    <string name="tools_hub_advanced_plugins">高度なツールとプラグイン</string>
+    <string name="tool_requires_root">このツールにはroot権限が必要です。</string>
+    <string name="tool_extract_subtitle">アプリを閲覧してAPKファイルを抽出</string>
+    <string name="tool_recycle_subtitle">削除したファイルを復元または削除</string>
+    <string name="tool_ftp_subtitle">ローカルネットワークでファイルを共有</string>
+    <string name="tool_network_subtitle">FTP、WebDAV、SMB接続</string>
+    <string name="tool_layout_subtitle">画面上のアプリとレイアウトを確認</string>
+    <string name="tool_color_subtitle">画面上の色を取得</string>
+    <string name="tool_freestyle_subtitle">ビジュアル作品を作成・編集</string>
+    <string name="screen_ocr_title">画面上のテキストをコピー</string>
+    <string name="screen_ocr_subtitle">画面や画像をオフラインでOCR</string>
+</resources>

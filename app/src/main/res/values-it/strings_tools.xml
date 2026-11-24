@@ -1,0 +1,24 @@
+<resources>
+    <string name="tools_hub_search">Cerca strumenti e pacchetti</string>
+    <string name="tools_hub_hint">Tutti i tuoi strumenti in un unico posto. Tieni premuto uno strumento per creare un collegamento nella schermata Home.</string>
+    <string name="tools_hub_summary_compact">%1$d strumenti · %2$d pacchetti installati</string>
+    <string name="tools_hub_no_results">Nessuno strumento corrisponde alla ricerca</string>
+    <string name="tools_hub_download_badge">Scarica</string>
+    <string name="tools_hub_pack_metadata">%1$d strumenti · v%2$s · %3$s</string>
+    <string name="tools_hub_pack_installed">Installato</string>
+    <string name="tools_hub_pack_available">Download facoltativo</string>
+    <string name="tools_hub_pack_update_available">Aggiornamento disponibile</string>
+    <string name="tools_hub_min_sdk">Richiede Android API %1$d o successiva</string>
+    <string name="tools_hub_install_apk">Installa il pacchetto da APK</string>
+    <string name="tools_hub_advanced_plugins">Strumenti avanzati e plugin</string>
+    <string name="tool_requires_root">Questo strumento richiede l’accesso root.</string>
+    <string name="tool_extract_subtitle">Sfoglia le app ed estrai file APK</string>
+    <string name="tool_recycle_subtitle">Ripristina o rimuovi i file eliminati</string>
+    <string name="tool_ftp_subtitle">Condividi file sulla rete locale</string>
+    <string name="tool_network_subtitle">Connessioni FTP, WebDAV e SMB</string>
+    <string name="tool_layout_subtitle">Esamina l’app e il layout sullo schermo</string>
+    <string name="tool_color_subtitle">Scegli i colori da qualsiasi schermata</string>
+    <string name="tool_freestyle_subtitle">Crea e modifica composizioni visive</string>
+    <string name="screen_ocr_title">Copia il testo sullo schermo</string>
+    <string name="screen_ocr_subtitle">OCR offline per schermate e immagini</string>
+</resources>

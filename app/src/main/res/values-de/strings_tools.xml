@@ -1,0 +1,24 @@
+<resources>
+    <string name="tools_hub_search">Werkzeuge und Pakete suchen</string>
+    <string name="tools_hub_hint">Alle Werkzeuge an einem Ort. Halte ein Werkzeug gedrückt, um eine Verknüpfung auf dem Startbildschirm zu erstellen.</string>
+    <string name="tools_hub_summary_compact">%1$d Werkzeuge · %2$d installierte Pakete</string>
+    <string name="tools_hub_no_results">Keine passenden Werkzeuge gefunden</string>
+    <string name="tools_hub_download_badge">Herunterladen</string>
+    <string name="tools_hub_pack_metadata">%1$d Werkzeuge · v%2$s · %3$s</string>
+    <string name="tools_hub_pack_installed">Installiert</string>
+    <string name="tools_hub_pack_available">Optionaler Download</string>
+    <string name="tools_hub_pack_update_available">Update verfügbar</string>
+    <string name="tools_hub_min_sdk">Erfordert Android API %1$d oder neuer</string>
+    <string name="tools_hub_install_apk">Paket aus APK installieren</string>
+    <string name="tools_hub_advanced_plugins">Erweiterte Werkzeuge und Plugins</string>
+    <string name="tool_requires_root">Dieses Werkzeug benötigt Root-Zugriff.</string>
+    <string name="tool_extract_subtitle">Apps durchsuchen und APK-Dateien extrahieren</string>
+    <string name="tool_recycle_subtitle">Gelöschte Dateien wiederherstellen oder entfernen</string>
+    <string name="tool_ftp_subtitle">Dateien über das lokale Netzwerk teilen</string>
+    <string name="tool_network_subtitle">FTP-, WebDAV- und SMB-Verbindungen</string>
+    <string name="tool_layout_subtitle">App und Layout auf dem Bildschirm untersuchen</string>
+    <string name="tool_color_subtitle">Farben auf jedem Bildschirm aufnehmen</string>
+    <string name="tool_freestyle_subtitle">Visuelle Kompositionen erstellen und bearbeiten</string>
+    <string name="screen_ocr_title">Bildschirmtext kopieren</string>
+    <string name="screen_ocr_subtitle">Offline-Texterkennung für Bildschirme und Bilder</string>
+</resources>

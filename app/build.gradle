@@ -19,10 +19,13 @@ android {
 
     signingConfigs {
         release {
-            storeFile file("release.keystore")
-            storePassword "000000"
-            keyAlias "mido"
-            keyPassword "000000"
+            def keystoreFile = file("release.keystore")
+            if (keystoreFile.exists()) {
+                storeFile keystoreFile
+                storePassword System.getenv("RELEASE_STORE_PASSWORD") ?: (project.findProperty("RELEASE_STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "")
+                keyAlias System.getenv("RELEASE_KEY_ALIAS") ?: (project.findProperty("RELEASE_KEY_ALIAS") ?: System.getenv("KEY_ALIAS") ?: "")
+                keyPassword System.getenv("RELEASE_KEY_PASSWORD") ?: (project.findProperty("RELEASE_KEY_PASSWORD") ?: System.getenv("KEY_PASSWORD") ?: "")
+            }
         }
     }
 
@@ -35,7 +38,9 @@ android {
             }
         }
         release {
-            signingConfig signingConfigs.release
+            if (signingConfigs.release.storeFile?.exists() && signingConfigs.release.storePassword) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
@@ -66,6 +71,12 @@ android {
         buildConfig true
     }
 
+    testOptions {
+        unitTests.all {
+            maxHeapSize = "4g"
+        }
+    }
+
     // zstd for archives (.zst / .tar.zst): vendored sources, compiled per ABI when no prebuilt exists.
     if (!file("src/main/jniLibs/arm64-v8a/libmp_zstd.so").exists()) {
         externalNativeBuild {
@@ -87,6 +98,10 @@ android {
         resources.excludes.add("META-INF/DEPENDENCIES")
         resources.excludes.add("META-INF/versions/9/OSGI-INF/MANIFEST.MF")
         resources.excludes.add("META-INF/versions/9/OSGI-INF/LICENSES/**")
+        // Android 10+ forbids executing binaries copied to writable app storage.
+        // Extract the bundled command-line executable into nativeLibraryDir instead.
+        jniLibs.useLegacyPackaging = true
+        jniLibs.keepDebugSymbols.add("**/libmp_aapt2.so")
     }
 }
 
@@ -94,13 +109,14 @@ dependencies {
     implementation project(':sdk')
     implementation project(':apkkit')
     implementation project(':zero-symbol-input-view')
+    implementation project(':zero-symbol-input-view-v2')
     implementation 'androidx.exifinterface:exifinterface:1.4.2'
     implementation 'androidx.startup:startup-runtime:1.2.0'
     implementation 'androidx.media:media:1.8.0'
     // NIO variant: commons-compress's 7z reader touches java.nio.file (LinkOption
     // et al.) in static initializers, which is missing below API 26 otherwise.
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs_nio:2.1.5'
-    implementation files('libs/antlr.jar')
+    implementation 'org.antlr:antlr-runtime:3.5.2'
     implementation files('libs/bin-zip.jar')
     implementation 'androidx.recyclerview:recyclerview:1.4.0'
     implementation 'androidx.viewpager2:viewpager2:1.1.0'
@@ -114,9 +130,9 @@ dependencies {
     // Zstandard support comes from the vendored zstd compiled per-ABI
     // (app/src/main/cpp) 鈥?zstd-jni has no Android natives and aircompressor
     // touches sun.misc.Unsafe fields Android does not have.
-    implementation files('libs/xz-1.9.jar')
-    implementation files('libs/junrar-8.1.2.jar')
-    implementation("com.google.android.material:material:1.14.0")
+    implementation 'org.tukaani:xz:1.9'
+    implementation 'com.github.junrar:junrar:8.1.2'
+    implementation("com.google.android.material:material:1.12.0")
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.2.0'
     implementation("com.google.guava:guava:33.7.2-android")
     implementation 'com.beust:jcommander:1.82'
@@ -149,9 +165,9 @@ dependencies {
     implementation "androidx.biometric:biometric:1.1.0"
     implementation "androidx.window:window:1.5.1"
 
-        implementation files('libs/termux-terminal-view.aar')
+    implementation files('libs/termux-terminal-view.aar')
     implementation files('libs/termux-terminal-emulator.aar')
-    implementation files('libs/commons-net-3.11.1.jar')
+    implementation 'commons-net:commons-net:3.11.1'
     // SMB2/3 client; no legacy SMB1 or native binaries.
     implementation 'com.hierynomus:smbj:0.14.0'
     // LSPatch (JingMatrix fork) integrated-mode patcher engine (vendored, see
@@ -173,6 +189,7 @@ dependencies {
     implementation("org.bouncycastle:bcprov-jdk18on:1.86")
     implementation 'com.squareup.okhttp3:okhttp:5.5.0'
     implementation 'com.airbnb.android:lottie:6.6.6'
+    implementation 'com.google.re2j:re2j:1.8'
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'com.squareup.okhttp3:mockwebserver:5.5.0'
     androidTestImplementation 'androidx.test:runner:1.6.2'

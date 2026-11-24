@@ -10,8 +10,6 @@ import io.github.abdurazaaqmohammed.util.misc.UpdateUtil;
 
 
 import android.app.Activity;
-import android.app.AlarmManager;
-import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -22,7 +20,6 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.Process;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
@@ -52,7 +49,6 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.button.MaterialButtonToggleGroup;
 import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
-import com.google.android.material.snackbar.Snackbar;
 import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.android.material.textfield.TextInputEditText;
 
@@ -60,6 +56,7 @@ import io.github.abdurazaaqmohammed.ui.main.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
 import io.github.abdurazaaqmohammed.ui.main.FileMenuCustomizer;
 import io.github.abdurazaaqmohammed.ui.main.FileMenuOrder;
+import io.github.abdurazaaqmohammed.plugins.themes.ThemePacks;
 import io.github.abdurazaaqmohammed.ui.common.theme.BuiltInThemes;
 import io.github.abdurazaaqmohammed.ui.common.theme.ThemeRegistry;
 import io.github.abdurazaaqmohammed.ui.common.util.AppFont;
@@ -70,15 +67,15 @@ import io.github.abdurazaaqmohammed.plugins.ext.SettingToggle;
 import io.github.abdurazaaqmohammed.util.text.FileSize;
 import io.github.abdurazaaqmohammed.plugins.ipc.ExternalActions;
 import io.github.abdurazaaqmohammed.plugins.ipc.PluginContracts;
-import io.github.abdurazaaqmohammed.plugins.ipc.PluginHost;
 import io.github.abdurazaaqmohammed.plugins.ipc.PluginTrust;
 import io.github.abdurazaaqmohammed.ui.main.PaneHighlightView;
 import io.github.abdurazaaqmohammed.ui.main.UIHelper;
 import io.github.abdurazaaqmohammed.ui.editor.FilePickerDialog;
 import io.github.abdurazaaqmohammed.util.io.FileUtils;
-import io.github.abdurazaaqmohammed.privilege.impl.RootManager;
 import io.github.abdurazaaqmohammed.util.io.RecycleBin;
 import io.github.abdurazaaqmohammed.privilege.api.PrivilegeManager;
+import io.github.abdurazaaqmohammed.util.text.PackageGuards;
+import io.github.abdurazaaqmohammed.data.prefs.WorkingModePrefs;
 import io.github.codehasan.colorpicker.extensions.Extensions;
 
 import java.io.File;
@@ -92,6 +89,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.Consumer;
+
+import com.rosan.dhizuku.api.Dhizuku;
+import com.rosan.dhizuku.api.DhizukuRequestPermissionListener;
 
 import net.lingala.zip4j.model.enums.CompressionLevel;
 
@@ -128,41 +128,73 @@ public class SettingsController {
         this.externalSettingLauncher = externalSettingLauncher;
     }
 
-    /**
-     * The theme is read once per process in a handful of places (including the text editor
-     * themes and the file icons), so a live switch leaves parts of the app on the old theme.
-     * Ask for a restart instead of pretending the change is complete.
-     */
-    private void promptThemeRestart() {
-        try {
-            Snackbar snackbar = Snackbar.make(
-                    activity.findViewById(android.R.id.content),
-                    R.string.restart_to_apply_theme, Snackbar.LENGTH_INDEFINITE);
-            snackbar.setAction(R.string.restart, v -> restartApp(activity));
-            snackbar.show();
-        } catch (Exception ignored) {
-            activity.recreate();
-        }
+    private void refreshTheme() {
+        ThemeRegistry.reload(activity);
     }
 
-    private static void restartApp(Context context) {
-        try {
-            Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
-            if (launch == null) return;
-            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK
-                    | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            PendingIntent pending = PendingIntent.getActivity(context, 0x5448, launch,
-                    PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-            AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
-            if (am != null) {
-                am.set(AlarmManager.RTC, System.currentTimeMillis() + 150, pending);
-            } else {
-                context.startActivity(launch);
-            }
-        } catch (Exception ignored) {
-        }
-        Process.killProcess(Process.myPid());
-        System.exit(0);
+    private void updateInstalledThemeButton(MaterialButton button, ThemePacks.Snapshot pack) {
+        button.setText(pack == null ? activity.getString(R.string.installed_themes)
+                : activity.getString(R.string.installed_theme_current, pack.name));
+    }
+
+    private void showInstalledThemes(MaterialButton button, MaterialButtonToggleGroup builtIns) {
+        button.setEnabled(false);
+        Context app = activity.getApplicationContext();
+        new Thread(() -> {
+            var entries = ThemePacks.discover(app);
+            activity.runOnUiThread(() -> {
+                button.setEnabled(true);
+                if (activity.isFinishing() || activity.isDestroyed()) return;
+                var dialog = new MaterialAlertDialogBuilder(activity)
+                        .setTitle(R.string.installed_themes)
+                        .setNegativeButton(android.R.string.cancel, null);
+                if (entries.isEmpty()) {
+                    dialog.setMessage(R.string.installed_themes_empty).show();
+                    return;
+                }
+                ThemePacks.Snapshot active = ThemePacks.active(activity);
+                var adapter = new ArrayAdapter<ThemePacks.Entry>(activity,
+                        android.R.layout.simple_list_item_1, entries) {
+                    @Override
+                    public View getView(int position, View convertView, ViewGroup parent) {
+                        TextView row = (TextView) super.getView(position, convertView, parent);
+                        ThemePacks.Entry entry = getItem(position);
+                        boolean selected = active != null && active.packageName.equals(entry.packageName);
+                        row.setText(selected ? activity.getString(R.string.installed_theme_selected, entry.label)
+                                : entry.label);
+                        row.setContentDescription(activity.getString(R.string.installed_theme_description,
+                                row.getText(), entry.packageName));
+                        int size = Math.round(24 * row.getResources().getDisplayMetrics().density);
+                        var icon = entry.icon;
+                        if (icon != null) icon.setBounds(0, 0, size, size);
+                        row.setCompoundDrawablesRelative(icon, null, null, null);
+                        row.setCompoundDrawablePadding(size / 2);
+                        return row;
+                    }
+                };
+                dialog.setAdapter(adapter, (d, index) -> {
+                    button.setEnabled(false);
+                    builtIns.setSelectionRequired(false);
+                    for (int i = 0; i < builtIns.getChildCount(); i++) builtIns.getChildAt(i).setEnabled(false);
+                    new Thread(() -> {
+                        boolean imported = ThemePacks.importAndSelect(app, entries.get(index));
+                        activity.runOnUiThread(() -> {
+                            if (activity.isFinishing() || activity.isDestroyed()) return;
+                            button.setEnabled(true);
+                            for (int i = 0; i < builtIns.getChildCount(); i++) builtIns.getChildAt(i).setEnabled(true);
+                            if (!imported) {
+                                builtIns.setSelectionRequired(ThemePacks.active(activity) == null);
+                                Extensions.showMessage(activity, R.string.installed_theme_import_failed);
+                                return;
+                            }
+                            builtIns.clearChecked();
+                            updateInstalledThemeButton(button, ThemePacks.active(activity));
+                            refreshTheme();
+                        });
+                    }, "theme-import").start();
+                }).show();
+            });
+        }, "theme-discovery").start();
     }
 
     public void attach(ViewFinder settingsDialog) {
@@ -209,7 +241,16 @@ public class SettingsController {
 
         MaterialButtonToggleGroup themeButtons = settingsDialog.findViewById(R.id.themeToggleGroup);
         String currentThemeId = ThemeRegistry.getCurrentId(activity);
-        if (BuiltInThemes.LIGHT_ID.equals(currentThemeId)) {
+        MaterialButton installedThemes = settingsDialog.findViewById(R.id.installedThemesButton);
+        TextView themeTitle = settingsDialog.findViewById(R.id.themeCardTitle);
+        themeTitle.setText(ThemeRegistry.packLabel(activity, "settings.theme", themeTitle.getText()));
+        ThemePacks.Snapshot activePack = ThemePacks.active(activity);
+        updateInstalledThemeButton(installedThemes, activePack);
+        installedThemes.setOnClickListener(v -> showInstalledThemes(installedThemes, themeButtons));
+        themeButtons.setSelectionRequired(activePack == null);
+        if (activePack != null) {
+            themeButtons.clearChecked();
+        } else if (BuiltInThemes.LIGHT_ID.equals(currentThemeId)) {
             themeButtons.check(R.id.lightThemeButton);
         } else if (BuiltInThemes.DARK_ID.equals(currentThemeId)) {
             themeButtons.check(R.id.darkThemeButton);
@@ -255,10 +296,13 @@ public class SettingsController {
                     themeButtons.check(R.id.systemThemeButton);
                     pluginId = BuiltInThemes.SYSTEM_DEFAULT_ID;
                 }
+                ThemePacks.deactivate(activity);
+                group.setSelectionRequired(true);
+                updateInstalledThemeButton(installedThemes, null);
                 applySystemThemeFlag(system);
                 ThemeRegistry.setCurrentId(activity, pluginId);
                 settings.edit().putInt("theme", ThemeRegistry.currentStyleRes(activity)).apply();
-                promptThemeRestart();
+                refreshTheme();
             }
         });
 
@@ -273,6 +317,16 @@ public class SettingsController {
         CompoundButton fixMimeTypeToggle = settingsDialog.findViewById(R.id.fixMimeTypeToggle);
         fixMimeTypeToggle.setChecked(settings.getBoolean("fix_mime_type", false));
         fixMimeTypeToggle.setOnCheckedChangeListener((buttonView, isChecked) -> settings.edit().putBoolean("fix_mime_type", isChecked).apply());
+
+        CompoundButton backNavigatesFoldersToggle = settingsDialog.findViewById(R.id.backNavigatesFoldersToggle);
+        backNavigatesFoldersToggle.setChecked(settings.getBoolean("back_navigates_folders", true));
+        backNavigatesFoldersToggle.setOnCheckedChangeListener((buttonView, isChecked) ->
+                settings.edit().putBoolean("back_navigates_folders", isChecked).apply());
+
+        CompoundButton compressPathToggle = settingsDialog.findViewById(R.id.compressPathToggle);
+        compressPathToggle.setChecked(settings.getBoolean("compress_path_display", false));
+        compressPathToggle.setOnCheckedChangeListener((buttonView, isChecked) ->
+                settings.edit().putBoolean("compress_path_display", isChecked).apply());
 
         CompoundButton askBookmarkTabToggle = settingsDialog.findViewById(R.id.askBookmarkTabToggle);
         askBookmarkTabToggle.setChecked(settings.getBoolean("ask_bookmark_tab", false));
@@ -492,6 +546,7 @@ public class SettingsController {
         try {
             for (ExternalActions.Entry e : external) {
                 if (e == null) continue;
+                ExternalActions.migrateSetting(activity, e, settings);
                 final String key = ExternalActions.settingKey(e);
                 final boolean isAction = ExternalActions.settingIsAction(e);
                 String tl = TextUtils.isEmpty(e.title) ? e.id : e.title;
@@ -537,7 +592,7 @@ public class SettingsController {
     private void openExternalSetting(ExternalActions.Entry e, String key,
                                      boolean isAction, SharedPreferences settings) {
         try {
-            Intent intent = PluginHost.explicitIntent(e.plugin,
+            Intent intent = ExternalActions.intent(activity, e,
                     PluginContracts.ACTION_SETTING_CONFIG);
             intent.putExtra(PluginContracts.EXTRA_PLUGIN_ID, e.plugin.pluginId);
             intent.putExtra(PluginContracts.EXTRA_KEY, key);
@@ -547,8 +602,11 @@ public class SettingsController {
             PluginTrust.ensureTrusted(activity, e.plugin, () ->
                     externalSettingLauncher.launch(intent, result -> {
                         try {
-                            if (isAction || result.getResultCode() != Activity.RESULT_OK
+                            if (result.getResultCode() != Activity.RESULT_OK
                                     || result.getData() == null) return;
+                            io.github.abdurazaaqmohammed.plugins.ipc.PluginThemeRequests
+                                    .handle(activity, e, result.getData());
+                            if (isAction) return;
                             Bundle extras = result.getData().getExtras();
                             if (extras == null || !extras.containsKey(PluginContracts.EXTRA_VALUE)) return;
                             Object v = extras.get(PluginContracts.EXTRA_VALUE);
@@ -566,8 +624,12 @@ public class SettingsController {
 
     private void setupLanguageSettings(ViewFinder root) {
         AutoCompleteTextView languageTv = root.findViewById(R.id.languageTv);
-        String[] langTags = {"", "ar", "en", "es", "fa", "id", "ru", "th", "zh-CN"};
-        String[] langLabels = {activity.getString(R.string.language_system), "العربية", "English", "Español", "فارسی", "Bahasa Indonesia", "Русский", "ภาษาไทย", "中文 (简体)"};
+        String[] langTags = {"", "ar", "en", "es", "fa", "id", "ru", "th", "tr", "vi", "zh-CN",
+                "de", "fr", "it", "pt", "ja", "ko", "hi"};
+        String[] langLabels = {activity.getString(R.string.language_system), "العربية", "English",
+                "Español", "فارسی", "Bahasa Indonesia", "Русский", "ภาษาไทย", "Türkçe",
+                "Tiếng Việt", "中文 (简体)", "Deutsch", "Français", "Italiano", "Português",
+                "日本語", "한국어", "हिन्दी"};
         languageTv.setAdapter(dropdownAdapter(langLabels));
         String current = AppCompatDelegate.getApplicationLocales().toLanguageTags();
         int selected = 0;
@@ -944,8 +1006,6 @@ public class SettingsController {
         root.findViewById(R.id.pickAppPathBtn).setOnClickListener(v ->
                 pickDirInto(appPathTv, chosen -> {
                     settings.edit().putString("app_path_dir", chosen).apply();
-                    // Logs and framework resources follow the new base immediately.
-                    UiPrefs.frameworkDir(activity);
                 }));
 
         TextView apkExtractPathTv = root.findViewById(R.id.apkExtractPathTv);
@@ -1034,6 +1094,13 @@ public class SettingsController {
         fileMenuTwoColumnSwitch.setOnCheckedChangeListener((v, checked) ->
                 FileMenuOrder.setTwoColumn(activity, checked));
 
+        CompoundButton filePermsSwitch = root.findViewById(R.id.filePermsSwitch);
+        filePermsSwitch.setChecked(UiPrefs.showFilePermissions(activity));
+        filePermsSwitch.setOnCheckedChangeListener((v, checked) -> {
+            UiPrefs.setShowFilePermissions(activity, checked);
+            refreshFileLists();
+        });
+
         AutoCompleteTextView compressTv = root.findViewById(R.id.compressLevelTv);
         List<String> levels = new ArrayList<>();
         for (CompressionLevel cl : CompressionLevel.values()) {
@@ -1047,7 +1114,6 @@ public class SettingsController {
     }
 
     private void setupAccessSettings(ViewFinder root, SharedPreferences settings) {
-        RootManager rootManager = RootManager.getInstance(activity);
         AutoCompleteTextView workingModeTv = root.findViewById(R.id.workingModeTv);
         View groupRoot = root.findViewById(R.id.groupRoot);
         View groupShizuku = root.findViewById(R.id.groupShizuku);
@@ -1083,9 +1149,9 @@ public class SettingsController {
         if (shizukuSupported) modeLabels.add(labelShizuku);
         workingModeTv.setAdapter(dropdownAdapter(modeLabels));
 
-        RootManager.WorkingMode current = rootManager.getWorkingMode();
-        if (current == RootManager.WorkingMode.ROOT) workingModeTv.setText(labelRoot, false);
-        else if (current == RootManager.WorkingMode.SHIZUKU && shizukuSupported) {
+        WorkingModePrefs.WorkingMode current = WorkingModePrefs.get(activity);
+        if (current == WorkingModePrefs.WorkingMode.ROOT) workingModeTv.setText(labelRoot, false);
+        else if (current == WorkingModePrefs.WorkingMode.SHIZUKU && shizukuSupported) {
             workingModeTv.setText(labelShizuku, false);
         } else workingModeTv.setText(labelNonRoot, false);
 
@@ -1093,15 +1159,15 @@ public class SettingsController {
             boolean running = shizukuSupported && PrivilegeManager.Shizuku.isRunning();
             boolean granted = running && PrivilegeManager.Shizuku.hasPermission();
             grantShizukuBtn.setVisibility(
-                    rootManager.getWorkingMode() == RootManager.WorkingMode.SHIZUKU
+                    WorkingModePrefs.get(activity) == WorkingModePrefs.WorkingMode.SHIZUKU
                             && running && !granted ? View.VISIBLE : View.GONE);
         };
 
         Runnable applyModeUi = () -> {
-            RootManager.WorkingMode mode = rootManager.getWorkingMode();
-            boolean isRoot = mode == RootManager.WorkingMode.ROOT;
-            boolean isSh = mode == RootManager.WorkingMode.SHIZUKU && shizukuSupported;
-            boolean rootOk = isRoot && rootManager.isRootAvailable();
+            WorkingModePrefs.WorkingMode mode = WorkingModePrefs.get(activity);
+            boolean isRoot = mode == WorkingModePrefs.WorkingMode.ROOT;
+            boolean isSh = mode == WorkingModePrefs.WorkingMode.SHIZUKU && shizukuSupported;
+            boolean rootOk = isRoot && PrivilegeManager.Root.isRootAvailable(activity);
             boolean shizukuRunning = isSh && PrivilegeManager.Shizuku.isRunning();
             boolean shizukuReady = shizukuRunning && PrivilegeManager.Shizuku.hasPermission();
 
@@ -1144,13 +1210,13 @@ public class SettingsController {
                 workingModeTv.setText(labelRoot, false);
                 Extensions.showMessage(activity, "Checking root…");
                 new Thread(() -> {
-                    boolean ok = rootManager.isRootAvailable();
+                    boolean ok = PrivilegeManager.Root.isRootAvailable(activity);
                     handler.post(() -> {
                         if (ok) {
-                            rootManager.setWorkingMode(RootManager.WorkingMode.ROOT);
+                            WorkingModePrefs.set(activity, WorkingModePrefs.WorkingMode.ROOT);
                         } else {
                             Extensions.showMessage(activity, R.string.root_denied_msg);
-                            workingModeTv.setText(rootManager.getWorkingMode() == RootManager.WorkingMode.SHIZUKU
+                            workingModeTv.setText(WorkingModePrefs.get(activity) == WorkingModePrefs.WorkingMode.SHIZUKU
                                     ? labelShizuku : labelNonRoot, false);
                         }
                         applyModeUi.run();
@@ -1164,7 +1230,7 @@ public class SettingsController {
                     workingModeTv.setText(labelNonRoot, false);
                     return;
                 }
-                rootManager.setWorkingMode(RootManager.WorkingMode.SHIZUKU);
+                WorkingModePrefs.set(activity, WorkingModePrefs.WorkingMode.SHIZUKU);
                 applyModeUi.run();
                 new Thread(() -> PrivilegeManager.Shizuku.warmUp(activity)).start();
                 if (!PrivilegeManager.Shizuku.hasPermission()) {
@@ -1172,11 +1238,32 @@ public class SettingsController {
                 }
                 return;
             }
-            rootManager.setWorkingMode(RootManager.WorkingMode.NON_ROOT);
+            WorkingModePrefs.set(activity, WorkingModePrefs.WorkingMode.NON_ROOT);
             applyModeUi.run();
         });
 
         grantShizukuBtn.setOnClickListener(v -> requestShizukuPerm(applyModeUi));
+
+        View groupDhizuku = root.findViewById(R.id.groupDhizuku);
+        TextView dhizukuStatusTv = root.findViewById(R.id.dhizukuStatusTv);
+        MaterialButton grantDhizukuBtn = root.findViewById(R.id.grantDhizukuBtn);
+        Runnable applyDhizukuUi = () -> {
+            boolean available;
+            boolean granted = false;
+            try {
+                available = Dhizuku.init(activity);
+                if (available) granted = Dhizuku.isPermissionGranted();
+            } catch (Throwable t) {
+                available = false;
+            }
+            groupDhizuku.setVisibility(available ? View.VISIBLE : View.GONE);
+            if (available) {
+                dhizukuStatusTv.setText(granted ? R.string.dhizuku_granted : R.string.dhizuku_pending);
+                grantDhizukuBtn.setVisibility(granted ? View.GONE : View.VISIBLE);
+            }
+        };
+        applyDhizukuUi.run();
+        grantDhizukuBtn.setOnClickListener(v -> requestDhizukuPerm(applyDhizukuUi));
 
         silentInstallToggle.setChecked(settings.getBoolean("silent_install", false));
         silentInstallToggle.setOnCheckedChangeListener((v, checked) -> settings.edit().putBoolean("silent_install", checked).apply());
@@ -1224,7 +1311,7 @@ public class SettingsController {
             @Override public void onTextChanged(CharSequence s, int st, int b, int c) {}
             @Override public void afterTextChanged(Editable s) {
                 String v = s == null ? "" : s.toString().trim();
-                if (!v.isEmpty() && !RootManager.isPackageNameValid(v)) {
+                if (!v.isEmpty() && !PackageGuards.isPackageNameValid(v)) {
                     installerCustomPkgEt.setError("Invalid package name");
                     return;
                 }
@@ -1270,7 +1357,21 @@ public class SettingsController {
         shizukuFileOpsToggle.setChecked(settings.getBoolean("shizuku_file_ops", false));
         shizukuFileOpsToggle.setOnCheckedChangeListener((v, checked) -> {
             settings.edit().putBoolean("shizuku_file_ops", checked).apply();
-            if (checked) new Thread(() -> PrivilegeManager.Shizuku.warmUp(activity)).start();
+            final Context app = activity.getApplicationContext();
+            new Thread(() -> {
+                // Read the latest value so rapid toggle changes cannot leave a
+                // service running after the user has disabled file operations.
+                synchronized (shizukuFileOpsToggle) {
+                    if (settings.getBoolean("shizuku_file_ops", false)) {
+                        PrivilegeManager.Shizuku.warmUp(app);
+                    } else {
+                        PrivilegeManager.Shizuku.stopFileService(app);
+                    }
+                }
+                app.getContentResolver().notifyChange(
+                        android.provider.DocumentsContract.buildRootsUri(
+                                app.getPackageName() + ".documents"), null);
+            }, "shizuku-file-ops").start();
         });
 
         rootExtractorToggle.setChecked(settings.getBoolean("root_extractor", false));
@@ -1303,6 +1404,25 @@ public class SettingsController {
         PrivilegeManager.Shizuku.requestPermission(activity, holder[0]);
     }
 
+    private void requestDhizukuPerm(Runnable onResult) {
+        try {
+            Dhizuku.requestPermission(new DhizukuRequestPermissionListener() {
+                @Override
+                public void onRequestPermission(int grantResult) {
+                    handler.post(() -> {
+                        if (grantResult != PackageManager.PERMISSION_GRANTED) {
+                            Extensions.showMessage(activity, R.string.dhizuku_denied);
+                        }
+                        onResult.run();
+                    });
+                }
+            });
+        } catch (Throwable t) {
+            Extensions.showMessage(activity, R.string.dhizuku_denied);
+            onResult.run();
+        }
+    }
+
     private void saveSuCommand(ViewFinder root) {
         try {
             TextInputEditText suCommandEt = root.findViewById(R.id.suCommandEt);
@@ -1313,7 +1433,7 @@ public class SettingsController {
             }
             PreferenceManager.getDefaultSharedPreferences(activity).edit()
                     .putString("su_command", cmd).apply();
-            RootManager.getInstance(activity).refreshRootCache();
+            PrivilegeManager.Root.refreshRootCache(activity);
         } catch (Exception ignored) {
         }
     }
@@ -1384,8 +1504,7 @@ public class SettingsController {
     }
 
     private void showRebootDialog() {
-        RootManager rootManager = RootManager.getInstance(activity);
-        if (!rootManager.isRootMode()) {
+        if (!PrivilegeManager.Root.isRootMode(activity)) {
             Extensions.showMessage(activity, R.string.root_mode_is_disabled);
             return;
         }
@@ -1409,10 +1528,10 @@ public class SettingsController {
                             .setPositiveButton(activity.getString(R.string.confirm), (d2, w2) -> {
                                 try {
                                     switch (which) {
-                                        case 0: rootManager.reboot(null); break;
-                                        case 1: rootManager.reboot("recovery"); break;
-                                        case 2: rootManager.reboot("bootloader"); break;
-                                        case 3: rootManager.reboot("-p"); break;
+                                        case 0: PrivilegeManager.Root.reboot(activity, null); break;
+                                        case 1: PrivilegeManager.Root.reboot(activity, "recovery"); break;
+                                        case 2: PrivilegeManager.Root.reboot(activity, "bootloader"); break;
+                                        case 3: PrivilegeManager.Root.reboot(activity, "-p"); break;
                                     }
                                     Extensions.showMessage(activity, "Rebooting...");
                                 } catch (Exception e) {
@@ -1429,14 +1548,20 @@ public class SettingsController {
     private void performExportSettings() {
         FilePickerDialog.Properties props = new FilePickerDialog.Properties();
         props.selection_mode = FilePickerDialog.SINGLE_MODE;
-        props.selection_type = FilePickerDialog.DIR_SELECT;
+        props.selection_type = FilePickerDialog.FILE_AND_DIR_SELECT;
         props.root = Environment.getExternalStorageDirectory();
         FilePickerDialog picker = new FilePickerDialog(activity, props);
         picker.setTitle(activity.getString(R.string.export_settings));
         picker.setDialogSelectionListener(files -> {
             if (files != null && files.length > 0 && files[0] != null) {
-                File dir = new File(files[0]);
-                File target = new File(dir, "MPManager_Settings_Backup.json");
+                File selected = new File(files[0]);
+                File target;
+                if (selected.isDirectory()) {
+                    String timeStamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(new Date());
+                    target = new File(selected, "MPManager_Settings_Backup_" + timeStamp + ".json");
+                } else {
+                    target = selected;
+                }
                 try {
                     SettingsBackupHelper.exportToFile(activity, target);
                     Extensions.showMessage(activity, activity.getString(R.string.settings_exported) + ": " + target.getName());

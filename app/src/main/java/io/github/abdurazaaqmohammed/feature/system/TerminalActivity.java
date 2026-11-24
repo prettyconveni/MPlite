@@ -62,7 +62,8 @@ import java.util.Map;
 
 import io.github.abdurazaaqmohammed.MPManager.R;
 import io.github.abdurazaaqmohammed.ui.common.base.BaseActivity;
-import io.github.abdurazaaqmohammed.privilege.impl.RootManager;
+import io.github.abdurazaaqmohammed.privilege.internal.RootManager;
+import io.github.abdurazaaqmohammed.util.text.ShellQuote;
 
 /**
  * High-performance embedded terminal emulator for MPlite.
@@ -520,8 +521,8 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
         String[] shellArgs;
 
         if (scriptPath != null && !scriptPath.isEmpty()) {
-            String quotedScript = RootManager.quoteForSh(execScriptPath);
-            String scriptCmd = "if cd " + RootManager.quoteForSh(workingDir) + " 2>/dev/null; then :; else cd /sdcard 2>/dev/null || cd /; fi; "
+            String quotedScript = ShellQuote.escapeShellArg(execScriptPath);
+            String scriptCmd = "if cd " + ShellQuote.escapeShellArg(workingDir) + " 2>/dev/null; then :; else cd /sdcard 2>/dev/null || cd /; fi; "
                     + "_s=" + quotedScript + "; "
                     + "if [ \"$(dd if=\"$_s\" bs=4 count=1 2>/dev/null)\" = \"$(printf '\\177ELF')\" ]; then "
                     + "chmod +x \"$_s\" 2>/dev/null; "
@@ -549,14 +550,14 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
             if (asRoot && RootManager.getInstance(this).isRootAvailable()) {
                 shellExecutable = RootManager.getInstance(this).suBinary();
                 if (initialCmd != null && !initialCmd.isEmpty()) {
-                    shellArgs = new String[]{shellExecutable, "-c", "cd " + RootManager.quoteForSh(workingDir) + " && " + initialCmd + "; exec /system/bin/sh"};
+                    shellArgs = new String[]{shellExecutable, "-c", "cd " + ShellQuote.escapeShellArg(workingDir) + " && " + initialCmd + "; exec /system/bin/sh"};
                 } else {
                     shellArgs = new String[]{shellExecutable};
                 }
             } else {
                 shellExecutable = "/system/bin/sh";
                 if (initialCmd != null && !initialCmd.isEmpty()) {
-                    shellArgs = new String[]{shellExecutable, "-c", "cd " + RootManager.quoteForSh(workingDir) + " && " + initialCmd + "; exec /system/bin/sh"};
+                    shellArgs = new String[]{shellExecutable, "-c", "cd " + ShellQuote.escapeShellArg(workingDir) + " && " + initialCmd + "; exec /system/bin/sh"};
                 } else {
                     shellArgs = new String[]{shellExecutable, "-i"};
                 }

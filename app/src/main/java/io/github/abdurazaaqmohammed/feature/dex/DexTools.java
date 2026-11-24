@@ -1,12 +1,14 @@
 package io.github.abdurazaaqmohammed.feature.dex;
 
 
+import io.github.abdurazaaqmohammed.feature.apk.DexAntiConfuse;
 import io.github.abdurazaaqmohammed.feature.apk.DexDebugStripper;
 import io.github.abdurazaaqmohammed.feature.apk.DexMergeUtil;
 import io.github.abdurazaaqmohammed.feature.apk.DexRepairEngine;
 import io.github.abdurazaaqmohammed.feature.apk.DexStringDecryptor;
 import io.github.abdurazaaqmohammed.feature.apk.DexStringUtil;
 import io.github.abdurazaaqmohammed.ui.common.util.DialogUtil;
+import java.util.concurrent.atomic.AtomicBoolean;
 import io.github.abdurazaaqmohammed.util.misc.ErrorUtil;
 import io.github.abdurazaaqmohammed.data.prefs.UiPrefs;
 
@@ -72,7 +74,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import io.github.abdurazaaqmohammed.ui.main.ChecksumDialogs;
 import io.github.abdurazaaqmohammed.ui.main.MainActivity;
+import io.github.abdurazaaqmohammed.util.hash.HashUtil;
 import io.github.abdurazaaqmohammed.MPManager.R;
 import io.github.abdurazaaqmohammed.domain.files.ZipEntryInfo;
 import io.github.abdurazaaqmohammed.ui.viewer.ApkDrawableRenderer;
@@ -160,9 +164,11 @@ public class DexTools {
                 context.rss.getString(R.string.repair_dex),
                 context.rss.getString(R.string.dex_properties),
                 context.rss.getString(R.string.dex_to_smali),
+                context.rss.getString(R.string.dex_to_java),
                 context.rss.getString(R.string.translation_mode),
                 context.rss.getString(R.string.dex_replace_strings),
                 context.rss.getString(R.string.dex_decrypt_strings),
+                "Anti Confuse (remove array-payload junk)",
                 context.rss.getString(R.string.dex_merge)};
         dialogUtil.styleAlertDialog(dialogUtil.getDialogBuilder()
                 .setTitle(displayName)
@@ -174,13 +180,17 @@ public class DexTools {
                         showDexProperties(dexFile);
                     } else if (which == 3) {
                         dexToSmali(dexFile, zipFile);
-                    } else if (which == 5) {
-                        showDexStringReplaceDialog(dexFile, zipFile);
-                    } else if (which == 6) {
-                        showDexStringDecryptDialog(dexFile, zipFile);
-                    } else if (which == 7) {
-                        mergeDexOption(dexFile, zipFile);
                     } else if (which == 4) {
+                        dexToJava(dexFile, zipFile, entryPath);
+                    } else if (which == 6) {
+                        showDexStringReplaceDialog(dexFile, zipFile);
+                    } else if (which == 7) {
+                        showDexStringDecryptDialog(dexFile, zipFile);
+                    } else if (which == 8) {
+                        showDexAntiConfuseDialog(dexFile, zipFile);
+                    } else if (which == 9) {
+                        mergeDexOption(dexFile, zipFile);
+                    } else if (which == 5) {
                         // MT-style standalone translation mode (multidex dialog
                         // first when the dex comes from an archive).
                         if (zipFile != null) {
@@ -196,6 +206,153 @@ public class DexTools {
                 }).create());
     }
 
+    public void dexToJava(File dexFile, File zipFile, String entryPath) {
+        if (zipFile != null) {
+            DexPreExtract session = preExtractAllDex(context, zipFile, false);
+            List<String> dexFiles;
+            try {
+                dexFiles = listAllDexNames(zipFile);
+            } catch (Exception e) {
+                new ErrorUtil(context).showError(e);
+                return;
+            }
+            if (dexFiles.isEmpty()) {
+                Extensions.showMessage(context, R.string.no_files_found);
+                return;
+            }
+            if (dexFiles.size() == 1) {
+                proceedWithDexToJava(zipFile, session, dexFiles, entryPath);
+                return;
+            }
+            List<String> dexNames = new ArrayList<>(dexFiles);
+            MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(context);
+            builder.setTitle(context.rss.getString(R.string.fo_multidex));
+            CharSequence[] fileNames = new CharSequence[dexNames.size()];
+            for (int j = 0; j < dexNames.size(); j++) fileNames[j] = dexNames.get(j);
+            boolean[] selectedItems = new boolean[dexNames.size()];
+            String classesNo = dexFile == null ? "" : dexFile.getName().replace("classes", "").replace(".dex", "");
+            try {
+                int initialIndex = TextUtils.isEmpty(classesNo) ? 0 : (Integer.parseInt(classesNo) - 1);
+                if (initialIndex >= 0 && initialIndex < selectedItems.length) selectedItems[initialIndex] = true;
+            } catch (NumberFormatException ignored) {}
+
+            builder.setMultiChoiceItems(fileNames, selectedItems, (dialog, which, isChecked) -> selectedItems[which] = isChecked);
+            builder.setNeutralButton(context.rss.getString(android.R.string.selectAll), null)
+                    .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                        List<String> selectedNames = new ArrayList<>();
+                        for (int k = 0; k < selectedItems.length; k++) {
+                            if (selectedItems[k]) selectedNames.add(dexNames.get(k));
+                        }
+                        if (selectedNames.isEmpty()) return;
+                        proceedWithDexToJava(zipFile, session, selectedNames, entryPath);
+                    });
+            builder.setNegativeButton(android.R.string.cancel, null);
+            AlertDialog dialog = builder.create();
+            dialog.setOnShowListener(dialogInterface -> {
+                Button invertButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+                invertButton.setOnClickListener(v -> {
+                    String buttonText = invertButton.getText().toString();
+                    if (buttonText.equals(context.rss.getString(android.R.string.selectAll))) {
+                        for (int i1 = 0; i1 < selectedItems.length; i1++) {
+                            selectedItems[i1] = true;
+                            dialog.getListView().setItemChecked(i1, true);
+                        }
+                        invertButton.setText(R.string.invert_selection);
+                    } else {
+                        for (int i1 = 0; i1 < selectedItems.length; i1++) {
+                            selectedItems[i1] = !selectedItems[i1];
+                            dialog.getListView().setItemChecked(i1, selectedItems[i1]);
+                        }
+                    }
+                });
+            });
+            dialogUtil.styleAlertDialog(dialog);
+        } else {
+            File parent = dexFile.getParentFile();
+            File[] siblingDexes = parent != null ? parent.listFiles((dir, name) -> name.endsWith(".dex")) : null;
+            if (siblingDexes != null && siblingDexes.length > 1) {
+                Arrays.sort(siblingDexes, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+                CharSequence[] fileNames = new CharSequence[siblingDexes.length];
+                boolean[] selectedItems = new boolean[siblingDexes.length];
+                for (int j = 0; j < siblingDexes.length; j++) {
+                    fileNames[j] = siblingDexes[j].getName();
+                    if (siblingDexes[j].getName().equals(dexFile.getName())) {
+                        selectedItems[j] = true;
+                    }
+                }
+                MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(context);
+                builder.setTitle(context.rss.getString(R.string.fo_multidex));
+                builder.setMultiChoiceItems(fileNames, selectedItems, (dialog, which, isChecked) -> selectedItems[which] = isChecked);
+                builder.setNeutralButton(context.rss.getString(android.R.string.selectAll), null)
+                        .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                            List<File> chosenFiles = new ArrayList<>();
+                            ArrayList<String> chosenPaths = new ArrayList<>();
+                            for (int k = 0; k < selectedItems.length; k++) {
+                                if (selectedItems[k]) {
+                                    chosenFiles.add(siblingDexes[k]);
+                                    chosenPaths.add(siblingDexes[k].getAbsolutePath());
+                                }
+                            }
+                            if (chosenFiles.isEmpty()) return;
+                            String base = dexFile.getName().replaceFirst("\\.[^.]+$", "");
+                            JadxDecompileHelper.promptDecompileAction(context, chosenFiles, null, base,
+                                    () -> openDexPlusFiles(chosenPaths, null, null, null, true));
+                        });
+                builder.setNegativeButton(android.R.string.cancel, null);
+                AlertDialog dialog = builder.create();
+                dialog.setOnShowListener(dialogInterface -> {
+                    Button invertButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+                    invertButton.setOnClickListener(v -> {
+                        String buttonText = invertButton.getText().toString();
+                        if (buttonText.equals(context.rss.getString(android.R.string.selectAll))) {
+                            for (int i1 = 0; i1 < selectedItems.length; i1++) {
+                                selectedItems[i1] = true;
+                                dialog.getListView().setItemChecked(i1, true);
+                            }
+                            invertButton.setText(R.string.invert_selection);
+                        } else {
+                            for (int i1 = 0; i1 < selectedItems.length; i1++) {
+                                selectedItems[i1] = !selectedItems[i1];
+                                dialog.getListView().setItemChecked(i1, selectedItems[i1]);
+                            }
+                        }
+                    });
+                });
+                dialogUtil.styleAlertDialog(dialog);
+            } else {
+                List<File> single = new ArrayList<>();
+                single.add(dexFile);
+                String base = dexFile.getName().replaceFirst("\\.[^.]+$", "");
+                JadxDecompileHelper.promptDecompileAction(context, single, null, base,
+                        () -> openDexPlusFiles(singleDexList(dexFile), null, null, null, true));
+            }
+        }
+    }
+
+    private void proceedWithDexToJava(File zipFile, DexPreExtract session, List<String> selectedNames, String entryPath) {
+        new Thread(() -> {
+            try {
+                session.done.await();
+            } catch (InterruptedException e) {
+                return;
+            }
+            if (session.error != null) {
+                context.runOnUiThread(() -> new ErrorUtil(context).showError(session.error));
+                return;
+            }
+            List<File> files = new ArrayList<>();
+            ArrayList<String> paths = new ArrayList<>();
+            for (String name : selectedNames) {
+                File f = new File(session.outputDir, name);
+                files.add(f);
+                paths.add(f.getAbsolutePath());
+            }
+            String base = zipFile.getName().replaceFirst("\\.[^.]+$", "");
+            context.runOnUiThread(() -> JadxDecompileHelper.promptDecompileAction(context, files, zipFile, base,
+                    () -> openDexPlusFiles(paths, null, zipFile, entryPath, true)));
+        }).start();
+    }
+
     private static ArrayList<String> singleDexList(File dexFile) {
         ArrayList<String> single = new ArrayList<>();
         single.add(dexFile.getPath());
@@ -203,27 +360,21 @@ public class DexTools {
     }
 
     private void openDexPlusFiles(ArrayList<String> paths, Integer openTab) {
-        openDexPlusFiles(paths, openTab, null, null);
+        openDexPlusFiles(paths, openTab, null, null, false);
     }
 
-    /**
-     * @param zipFile   archive the dex files were extracted from, or null for a
-     *                  plain folder
-     * @param entryPath first entry name, used for the "update the archive?"
-     *                  prompt's title
-     *
-     * <p>The extras matter: {@code MainActivity.onActivityResult} only routes
-     * the result to {@code handleModifiedFileResult} (which asks whether to
-     * write the dex back into the APK/ZIP) when the intent carries them.
-     * Without them the editor's result was just highlighted in the pane and
-     * the archive was silently left untouched.</p>
-     */
-    private void openDexPlusFiles(ArrayList<String> paths, Integer openTab,
+    public void openDexPlusFiles(ArrayList<String> paths, Integer openTab,
                                   File zipFile, String entryPath) {
+        openDexPlusFiles(paths, openTab, zipFile, entryPath, false);
+    }
+
+    public void openDexPlusFiles(ArrayList<String> paths, Integer openTab,
+                                  File zipFile, String entryPath, boolean javaMode) {
         Intent intent = new Intent(context, DexEditorActivity.class)
                 .putExtra("theme", context.theme)
                 .putStringArrayListExtra("SelectedDexFiles", paths);
         if (openTab != null) intent.putExtra("openTab", openTab);
+        if (javaMode) intent.putExtra("java_mode", true);
         if (zipFile != null) {
             intent.putExtra("zipFilePath", zipFile.getAbsolutePath());
             if (entryPath != null) intent.putExtra("zipEntryPath", entryPath);
@@ -246,16 +397,16 @@ public class DexTools {
     private static final Map<String, DexPreExtract> dexPreExtracts = new LinkedHashMap<>();
     private static final List<DexPreExtract> retiredDexPreExtracts = new ArrayList<>();
 
-    private static class DexPreExtract {
-        final File zipFile;
-        final File outputDir;
-        final List<String> dexNames = new ArrayList<>();
-        final CountDownLatch done = new CountDownLatch(1);
-        volatile String error;
-        volatile int extracted;
-        volatile int total;
+    public static class DexPreExtract {
+        public final File zipFile;
+        public final File outputDir;
+        public final List<String> dexNames = new ArrayList<>();
+        public final CountDownLatch done = new CountDownLatch(1);
+        public volatile String error;
+        public volatile int extracted;
+        public volatile int total;
 
-        DexPreExtract(File zipFile, File outputDir) {
+        public DexPreExtract(File zipFile, File outputDir) {
             this.zipFile = zipFile;
             this.outputDir = outputDir;
         }
@@ -284,7 +435,7 @@ public class DexTools {
         return DexWorkspaceStore.archiveFor(new File(stagedPath));
     }
 
-    private static synchronized DexPreExtract preExtractAllDex(Context ctx, File zipFile, boolean force) {
+    public static synchronized DexPreExtract preExtractAllDex(Context ctx, File zipFile, boolean force) {
         cleanupDexWorkDirs(ctx);
         String key = zipFile.getAbsolutePath();
         DexPreExtract existing = dexPreExtracts.get(key);
@@ -392,7 +543,7 @@ public class DexTools {
         }
     }
 
-    private static List<String> listAllDexNames(File zipFile) throws IOException {
+    public static List<String> listAllDexNames(File zipFile) throws IOException {
         List<String> dexNames = new ArrayList<>();
         try (ZipFile zf = new ZipFile(zipFile)) {
             FileHeader fh = zf.getFileHeader("classes.dex");
@@ -759,74 +910,108 @@ public class DexTools {
         }
     }
 
-    public void handleZipEntryClick(ZipEntryInfo zipEntry) {        File zipFile = zipEntry.getZipFile();
+    public void handleZipEntryClick(ZipEntryInfo zipEntry) {
+        File zipFile = zipEntry.getZipFile();
         String fullPath = zipEntry.getFullPath();
         if(zipEntry.isDirectory()) context.loadZipFolderInPane(zipFile, fullPath, pane1, false);
-        else new Thread(() -> {
-            try {
+        else {
             final String name = zipEntry.getName();
-            String outputDir = context.getCacheDir() + File.separator + UUID.randomUUID();
-            File tempFolder = new File(outputDir);
-            tempFolder.mkdir();
-            File tempFile = new File(tempFolder, name);
-            tempFile.createNewFile();
-            // One generic stage covers every browsable archive format; the
-            // special cases below work on the staged copy.
-            ArchiveBrowseUtil.extractEntry(zipFile, fullPath, tempFile);
-            context.handler.post(() -> openWith.openWithDefaults(tempFile, name, zipFile, fullPath, () -> {
-            if(name.endsWith(".dex")) {
-                if (ArchiveBrowseUtil.isZipLike(zipFile))
-                    preExtractAllDex(context, zipFile, false);
-                context.handler.post(() -> showDexOptionsDialog(tempFile, zipFile, fullPath, name));
-            } else if (name.endsWith(".xml")) {
-                if (ApkDrawableRenderer.isDrawableXmlEntry(zipFile, fullPath)) {
-                    // res/drawable* / res/mipmap* / res/color* XMLs are
-                    // pictures, not documents: show the rendered preview and
-                    // keep the AXML editor one button away.
-                    context.handler.post(() -> DrawablePreviewDialog.show(
-                            context, zipFile, fullPath,
-                            () -> openXmlInEditor(tempFile, zipFile, fullPath)));
-                } else {
-                    openXmlInEditor(tempFile, zipFile, fullPath);
-                }
-            } else if (name.endsWith(".smali")) {
-                context.startActivityForResult(new Intent(context, TextEditorActivity.class)
-                        .putExtra("zf", zipFile.getPath())
-                        .putExtra("zipEntryPath", fullPath)
-                        .putExtra("path", tempFile.getPath()), 757);
-            } else if (name.equals("resources.arsc")) {
-                context.handler.post(() -> showArscOpenWith(tempFile, zipFile, fullPath));
-            } else if (name.toLowerCase(java.util.Locale.ROOT).endsWith(".sh")) {
-                tempFile.setExecutable(true, false);
-                tempFile.setReadable(true, false);
-                String parentDirInZip = "";
-                int lastSlash = fullPath.lastIndexOf('/');
-                if (lastSlash >= 0) {
-                    parentDirInZip = fullPath.substring(0, lastSlash + 1);
-                }
-                final String finalParentDir = parentDirInZip;
+            final boolean isPayloadCandidate = "payload.bin".equalsIgnoreCase(name)
+                    || name.endsWith(".payload")
+                    || (name.endsWith(".bin") && (fullPath.toLowerCase(java.util.Locale.ROOT).contains("payload") || name.toLowerCase(java.util.Locale.ROOT).contains("payload")));
+            final ProgressManager[] pmHolder = new ProgressManager[1];
+            if (isPayloadCandidate) {
+                context.runOnUiThread(() -> {
+                    ProgressManager pm = new ProgressManager(context, true);
+                    pm.setText(context.getString(R.string.extracting) + " " + name + "...");
+                    pm.show();
+                    pmHolder[0] = pm;
+                });
+            }
+            new Thread(() -> {
                 try {
-                    for (ArchiveBrowseUtil.RawEntry re : ArchiveBrowseUtil.listEntries(zipFile)) {
-                        String p = re.path();
-                        if (!p.equals(fullPath) && p.startsWith(finalParentDir) && !re.isDirectory()) {
-                            String rel = p.substring(finalParentDir.length());
-                            if (!rel.contains("/")) {
-                                File sib = new File(tempFolder, rel);
-                                ArchiveBrowseUtil.extractEntry(zipFile, p, sib);
-                                sib.setExecutable(true, false);
-                            }
+                    String outputDir = context.getCacheDir() + File.separator + UUID.randomUUID();
+                    File tempFolder = new File(outputDir);
+                    tempFolder.mkdir();
+                    File tempFile = new File(tempFolder, name);
+                    tempFile.createNewFile();
+                    // One generic stage covers every browsable archive format; the
+                    // special cases below work on the staged copy.
+                    ArchiveBrowseUtil.extractEntry(zipFile, fullPath, tempFile);
+                    if (isPayloadCandidate) {
+                        context.runOnUiThread(() -> {
+                            if (pmHolder[0] != null) pmHolder[0].dismiss();
+                        });
+                        if (io.github.abdurazaaqmohammed.feature.payload.PayloadParser.isPayload(tempFile)) {
+                            context.handler.post(() -> io.github.abdurazaaqmohammed.feature.payload.PayloadDialog.showForPayload(context, tempFile, pane1));
+                            return;
                         }
                     }
-                } catch (Throwable ignored) {}
-                context.handler.post(() -> openWith.open(tempFile, name, zipFile, fullPath));
-            } else {
-                openWith.open(tempFile, name, zipFile, fullPath);
-            }
-            }));
-        } catch (Exception e) {
-            new ErrorUtil(context).showError(e);
+                    if (name.toLowerCase(java.util.Locale.ROOT).endsWith(".sh")) {
+                        tempFile.setExecutable(true, false);
+                        tempFile.setReadable(true, false);
+                        String parentDirInZip = "";
+                        int lastSlash = fullPath.lastIndexOf('/');
+                        if (lastSlash >= 0) {
+                            parentDirInZip = fullPath.substring(0, lastSlash + 1);
+                        }
+                        final String finalParentDir = parentDirInZip;
+                        try {
+                            for (ArchiveBrowseUtil.RawEntry re : ArchiveBrowseUtil.listEntries(zipFile)) {
+                                String p = re.path();
+                                if (!p.equals(fullPath) && p.startsWith(finalParentDir) && !re.isDirectory()) {
+                                    String rel = p.substring(finalParentDir.length());
+                                    if (!rel.contains("/")) {
+                                        File sib = new File(tempFolder, rel);
+                                        ArchiveBrowseUtil.extractEntry(zipFile, p, sib);
+                                        sib.setExecutable(true, false);
+                                    }
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                    context.handler.post(() -> openWith.openWithDefaults(tempFile, name, zipFile, fullPath, () -> {
+                    if(name.endsWith(".dex")) {
+                        if (ArchiveBrowseUtil.isZipLike(zipFile))
+                            preExtractAllDex(context, zipFile, false);
+                        context.handler.post(() -> showDexOptionsDialog(tempFile, zipFile, fullPath, name));
+                    } else if (name.endsWith(".xml")) {
+                        if (ApkDrawableRenderer.isDrawableXmlEntry(zipFile, fullPath)) {
+                            // res/drawable* / res/mipmap* / res/color* XMLs are
+                            // pictures, not documents: show the rendered preview and
+                            // keep the AXML editor one button away.
+                            context.handler.post(() -> DrawablePreviewDialog.show(
+                                    context, zipFile, fullPath,
+                                    () -> openXmlInEditor(tempFile, zipFile, fullPath)));
+                        } else {
+                            openXmlInEditor(tempFile, zipFile, fullPath);
+                        }
+                    } else if (name.endsWith(".smali")) {
+                        context.startActivityForResult(new Intent(context, TextEditorActivity.class)
+                                .putExtra("zf", zipFile.getPath())
+                                .putExtra("zipEntryPath", fullPath)
+                                .putExtra("path", tempFile.getPath()), 757);
+                    } else if (name.equals("resources.arsc")) {
+                        context.handler.post(() -> showArscOpenWith(tempFile, zipFile, fullPath));
+                    } else if (HashUtil.isChecksumFile(name)) {
+                        // Tapping a .sfv/.md5 entry verifies it against its sibling
+                        // archive entries instead of falling through to open-with.
+                        context.handler.post(() -> new ChecksumDialogs(context, dialogUtil)
+                                .showZipChecksumVerifyDialog(zipFile, fullPath));
+                    } else {
+                        openWith.open(tempFile, name, zipFile, fullPath);
+                    }
+                    }));
+                } catch (Exception e) {
+                    if (isPayloadCandidate) {
+                        context.runOnUiThread(() -> {
+                            if (pmHolder[0] != null) pmHolder[0].dismiss();
+                        });
+                    }
+                    new ErrorUtil(context).showError(e);
+                }
+            }).start();
         }
-        }).start();
     }
 
     /**
@@ -974,6 +1159,74 @@ public class DexTools {
                 })
                 .setNegativeButton(android.R.string.cancel, null)
                 .create());
+    }
+
+    /**
+     * Dex Anti Confuse: removes the dead array-payload junk that APKEditor-style dex
+     * "protect"/confuse injects after every method body (odd element width 3..19,
+     * unreferenced). Only that transformation is undone — no mappings needed, no
+     * renaming reversal, no string decryption; those are separate/impossible without
+     * the original mapping file. The scanner reports exact counts and a true no-op
+     * (nothing written, honest toast) when the dex carries no junk.
+     */
+    private void showDexAntiConfuseDialog(File dexFile, File zipFileOrNull) {
+        LinearLayout layout = new LinearLayout(context);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (16 * context.getResources().getDisplayMetrics().density);
+        layout.setPadding(pad, pad, pad, pad);
+        TextView desc = new TextView(context);
+        desc.setText("Removes the unreachable array-data payload junk that Protect/confuse (APKEditor) appends to every method (odd element width 3-19, nothing references it). No mappings needed. It does NOT reverse renamed classes/methods or encrypted strings — de-renaming needs the original mapping file, and other string fog needs its algorithm and key.");
+        desc.setPadding(0, 0, 0, pad / 2);
+        layout.addView(desc);
+
+        dialogUtil.styleAlertDialog(dialogUtil.getDialogBuilder()
+                .setTitle("Anti Confuse")
+                .setView(layout)
+                .setPositiveButton("Scan", (d, w) -> runDexAntiConfuse(dexFile, zipFileOrNull))
+                .setNegativeButton(android.R.string.cancel, null)
+                .create());
+    }
+
+    private void runDexAntiConfuse(File dexFile, File zipFileOrNull) {
+        ProgressManager pm = new ProgressManager(context, true);
+        pm.show();
+        new Thread(() -> {
+            File tmpOut = null;
+            try {
+                tmpOut = File.createTempFile("dexanti", ".dex", context.getCacheDir());
+                DexAntiConfuse.Result result = DexAntiConfuse.cleanDex(dexFile, tmpOut);
+                pm.dismiss();
+                if (!result.changed()) {
+                    // Honest no-op: nothing was written, the dex on disk is untouched.
+                    File noopOut = tmpOut;
+                    tmpOut = null;
+                    noopOut.delete();
+                    context.handler.post(() -> Extensions.showMessage(context,
+                            "Anti Confuse: no confuser junk found — dex left unchanged ("
+                                    + result.methodsScanned + " methods scanned, 0 payloads removed)"));
+                    return;
+                }
+                final File applyOut = tmpOut;
+                tmpOut = null; // ownership: Apply hands the file to applyDexStringReplace (deletes after copy);
+                               // any other dialog exit deletes it via the dismiss listener.
+                AtomicBoolean applied = new AtomicBoolean(false);
+                context.handler.post(() -> dialogUtil.styleAlertDialog(dialogUtil.getDialogBuilder()
+                        .setMessage(result.summary())
+                        .setPositiveButton(context.rss.getString(R.string.apply), (d2, w2) -> {
+                            applied.set(true);
+                            applyDexStringReplace(dexFile, zipFileOrNull, applyOut);
+                        })
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .setOnDismissListener(d2 -> {
+                            if (!applied.get()) applyOut.delete();
+                        })
+                        .create()));
+            } catch (Exception e) {
+                if (tmpOut != null) tmpOut.delete();
+                pm.dismiss();
+                context.handler.post(() -> new ErrorUtil(context).showError(e));
+            }
+        }).start();
     }
 
     private void runDexStringDecrypt(File dexFile, File zipFileOrNull, String customSig) {

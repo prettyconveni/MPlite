@@ -1,11 +1,14 @@
 package io.github.abdurazaaqmohammed.feature.files;
 
 import io.github.abdurazaaqmohammed.feature.apk.flutter.FlutterToolsDialog;
+import io.github.abdurazaaqmohammed.feature.arm64.Arm64DisassemblerActivity;
+import io.github.abdurazaaqmohammed.feature.dex.DexTools;
 import io.github.abdurazaaqmohammed.feature.sqlite.SqliteViewerActivity;
 import io.github.abdurazaaqmohammed.feature.system.SystemImageEngine;
 import io.github.abdurazaaqmohammed.feature.system.SystemImageMountManager;
 import io.github.abdurazaaqmohammed.feature.system.shell.CommandShellActivity;
 import io.github.abdurazaaqmohammed.privilege.api.ShellSession;
+import io.github.abdurazaaqmohammed.privilege.internal.RootManager;
 
 
 import io.github.abdurazaaqmohammed.feature.apk.ApkIconHelper;
@@ -113,6 +116,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -126,10 +130,10 @@ import javax.xml.transform.stream.StreamResult;
 
 import io.github.abdurazaaqmohammed.ui.main.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
-import io.github.abdurazaaqmohammed.privilege.impl.ShizukuFile;
 import io.github.abdurazaaqmohammed.ui.main.ApkToolsHandler;
 import io.github.abdurazaaqmohammed.ui.main.ChecksumDialogs;
 import io.github.abdurazaaqmohammed.ui.main.FileOperationsHelper;
+import io.github.abdurazaaqmohammed.ui.main.MainFilesArrayAdapter;
 import io.github.abdurazaaqmohammed.domain.files.ZipEntryInfo;
 import io.github.abdurazaaqmohammed.feature.apk.ArscEditorPlusActivity;
 import io.github.abdurazaaqmohammed.feature.apk.ArscEditorActivity;
@@ -144,12 +148,15 @@ import io.github.abdurazaaqmohammed.util.hash.HashUtil;
 import io.github.abdurazaaqmohammed.utils.LegacyUtils;
 import io.github.abdurazaaqmohammed.util.text.MimeUtil;
 import io.github.abdurazaaqmohammed.util.io.ProgressManager;
-import io.github.abdurazaaqmohammed.privilege.impl.RootManager;
-import io.github.abdurazaaqmohammed.privilege.impl.RootStaging;
 import io.github.abdurazaaqmohammed.util.io.SafFs;
 import io.github.abdurazaaqmohammed.privilege.api.PrivilegeManager;
 import io.github.abdurazaaqmohammed.util.archive.ZipCompat;
 import io.github.abdurazaaqmohammed.feature.apk.nativelib.ElfParser;
+import io.github.abdurazaaqmohammed.plugins.ipc.ExternalActions;
+import io.github.abdurazaaqmohammed.plugins.ipc.HookRegistry;
+import io.github.abdurazaaqmohammed.plugins.ipc.PluginContracts;
+import io.github.abdurazaaqmohammed.plugins.ipc.PluginEvents;
+import io.github.abdurazaaqmohammed.util.text.ShellQuote;
 import io.github.codehasan.colorpicker.extensions.Extensions;
 
 /**
@@ -201,7 +208,7 @@ public class FileOpener {
             }
         }
         if (FileUtils.isElf(fileName) || FileUtils.isElfFile(file)) {
-            showElfOptionsDialog(file, fileName, file);
+            openElfFileDefault(file, fileName, file);
             return;
         }
         showOpenWithDialog(file, fileName);
@@ -230,6 +237,10 @@ public class FileOpener {
         }
         if (FileUtils.isElf(fileName) || FileUtils.isElfFile(file)) {
             showElfOptionsDialog(file, fileName, file);
+            return;
+        }
+        if (("payload.bin".equalsIgnoreCase(fileName) || (fileName != null && (fileName.endsWith(".bin") || fileName.endsWith(".payload")))) && io.github.abdurazaaqmohammed.feature.payload.PayloadParser.isPayload(file)) {
+            io.github.abdurazaaqmohammed.feature.payload.PayloadDialog.showForPayload(context, file, pane1);
             return;
         }
         showOpenWithDialog(file, fileName, zipFile, zipEntryPath);
@@ -344,6 +355,12 @@ public class FileOpener {
             actionNames.add(context.getString(R.string.sh_execute));
             actionIcons.add(R.drawable.terminal_24px);
             actionHandlers.add(() -> showShellScriptDialog(file, originalFile != null ? originalFile : file, fileName));
+        } else {
+            actionIds.add("builtin_linux_script");
+            actionNames.add(context.getString(R.string.open_with_linux_script));
+            actionIcons.add(R.drawable.terminal_24px);
+            actionHandlers.add(() -> withReadableCopy(file, readable ->
+                    showShellScriptDialog(readable, originalFile != null ? originalFile : file, fileName)));
         }
 
         GridView gridView = new GridView(context);
@@ -504,11 +521,15 @@ public class FileOpener {
                     else if (!readable.getAbsolutePath().equals(file.getAbsolutePath()))
                         context.noteArchiveParent(readable, file, "");
                     context.loadZipFolderInPane(readable, "", pane1, true);
+                    notifyFileOpened(readable);
                 });
                 return;
             case BUILTIN_IMAGE:
                 if (file == null) return;
-                withReadableCopy(file, readable -> context.openImageViewer(readable.getAbsolutePath()));
+                withReadableCopy(file, readable -> {
+                    context.openImageViewer(readable.getAbsolutePath());
+                    notifyFileOpened(readable);
+                });
                 return;
             case BUILTIN_HEX:
                 if (file == null || !file.isFile()) {
@@ -519,7 +540,10 @@ public class FileOpener {
                 return;
             case BUILTIN_MEDIA:
                 if (file == null) return;
-                withReadableCopy(file, readable -> context.playMediaFile(readable.getAbsolutePath()));
+                withReadableCopy(file, readable -> {
+                    context.playMediaFile(readable.getAbsolutePath());
+                    notifyFileOpened(readable);
+                });
                 return;
             case BUILTIN_APK: {
                 if (fileName == null) return;
@@ -531,32 +555,41 @@ public class FileOpener {
                 withReadableCopy(file, readable -> {
                     if (apkTools != null) apkTools.showApkInfoDialog(readable, fileName);
                     else openWithDefaultOrDialog(readable, fileName);
+                    notifyFileOpened(readable);
                 });
                 return;
             }
             case BUILTIN_FONT:
                 if (file == null) return;
                 showFontPreview(file, fileName);
+                notifyFileOpened(file);
                 return;
             case BUILTIN_PDF:
                 if (file == null) return;
                 showPdfViewer(file, fileName);
+                notifyFileOpened(file);
                 return;
             case BUILTIN_HTML:
                 if (file == null) return;
                 showHtmlViewer(file, fileName);
+                notifyFileOpened(file);
                 return;
             case BUILTIN_ARSC:
                 if (file == null) return;
-                withReadableCopy(file, readable -> showArscOpenWith(readable, null, "resources.arsc"));
+                withReadableCopy(file, readable -> {
+                    showArscOpenWith(readable, null, "resources.arsc");
+                    notifyFileOpened(readable);
+                });
                 return;
             case BUILTIN_XML:
                 if (file == null) return;
                 showXmlFunctions(file, fileName);
+                notifyFileOpened(file);
                 return;
             case BUILTIN_SIG:
                 if (file == null) return;
                 importSignature(file, fileName);
+                notifyFileOpened(file);
                 return;
             case BUILTIN_DRAWABLE:
                 if (file == null) return;
@@ -565,10 +598,17 @@ public class FileOpener {
                 } else {
                     DrawablePreviewDialog.showFile(context, file);
                 }
+                notifyFileOpened(file);
                 return;
             case BUILTIN_SQLITE:
                 if (file == null) return;
                 openSqliteViewer(file);
+                notifyFileOpened(file);
+                return;
+            case "builtin_linux_script":
+                if (file == null) return;
+                withReadableCopy(file, readable -> showShellScriptDialog(readable, file, fileName));
+                notifyFileOpened(file);
                 return;
             default:
                 return;
@@ -623,6 +663,7 @@ public class FileOpener {
             case BUILTIN_SIG:
             case BUILTIN_DRAWABLE:
             case BUILTIN_SQLITE:
+            case "builtin_linux_script":
                 runBuiltinTool(def, file, fileName, zipFile, zipEntryPath);
                 return true;
             default:
@@ -688,12 +729,21 @@ public class FileOpener {
     private boolean tryLaunchExternalDefault(Uri uri, File readable, String logicalName) {
         String actionMime = MimeUtil.getMimeTypeForAction(context, readable, logicalName);
         if (actionMime == null) actionMime = "application/octet-stream";
-        if (tryLaunchDefaultApp(uri, actionMime)) return true;
+        if (tryLaunchDefaultApp(uri, actionMime)) {
+            notifyFileOpened(readable);
+            return true;
+        }
         try {
             String real = MimeUtil.getRealMimeType(readable);
-            if (real != null && !real.equals(actionMime) && tryLaunchDefaultApp(uri, real)) return true;
+            if (real != null && !real.equals(actionMime) && tryLaunchDefaultApp(uri, real)) {
+                notifyFileOpened(readable);
+                return true;
+            }
             String reported = MimeUtil.getReportedMimeType(context, readable, logicalName);
-            if (reported != null && !reported.equals(actionMime) && (real == null || !reported.equals(real)) && tryLaunchDefaultApp(uri, reported)) return true;
+            if (reported != null && !reported.equals(actionMime) && (real == null || !reported.equals(real)) && tryLaunchDefaultApp(uri, reported)) {
+                notifyFileOpened(readable);
+                return true;
+            }
         } catch (Exception ignored) {
         }
         return false;
@@ -844,7 +894,10 @@ public class FileOpener {
                 target = firstPart;
             }
         }
-        withReadableCopy(target, readable -> context.loadZipFolderInPane(readable, "", pane1, true));
+        withReadableCopy(target, readable -> {
+            context.loadZipFolderInPane(readable, "", pane1, true);
+            notifyFileOpened(readable);
+        });
     }
 
     private void showAppsForMime(File file, String fileName, boolean useActual) {
@@ -1041,129 +1094,10 @@ public class FileOpener {
                 Extensions.showMessage(context, R.string.cannot_open_item);
                 return;
             }
-            ParcelFileDescriptor pfd = null;
-            PdfRenderer renderer = null;
-            try {
-                pfd = ParcelFileDescriptor.open(readable, ParcelFileDescriptor.MODE_READ_ONLY);
-                renderer = new PdfRenderer(pfd);
-                int pageCount = renderer.getPageCount();
-                if (pageCount <= 0) {
-                    renderer.close();
-                    pfd.close();
-                    Extensions.showMessage(context, R.string.cannot_open_item);
-                    return;
-                }
-
-                final PdfRenderer finalRenderer = renderer;
-                final ParcelFileDescriptor finalPfd = pfd;
-
-                int[] currentPage = new int[]{0};
-
-                LinearLayout root = new LinearLayout(context);
-                root.setOrientation(LinearLayout.VERTICAL);
-                root.setGravity(Gravity.CENTER_HORIZONTAL);
-                int pad = (int) (12 * context.getResources().getDisplayMetrics().density + 0.5f);
-                root.setPadding(pad, pad, pad, pad);
-
-                TextView pageInfo = new TextView(context);
-                pageInfo.setGravity(Gravity.CENTER);
-                pageInfo.setTextSize(15);
-                pageInfo.setPadding(0, 0, 0, pad / 2);
-                root.addView(pageInfo);
-
-                ImageView pageImageView = new ImageView(context);
-                pageImageView.setAdjustViewBounds(true);
-                pageImageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                root.addView(pageImageView, new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-                LinearLayout navLayout = new LinearLayout(context);
-                navLayout.setOrientation(LinearLayout.HORIZONTAL);
-                navLayout.setGravity(Gravity.CENTER);
-                navLayout.setPadding(0, pad, 0, 0);
-
-                Button prevBtn = new Button(context, null, com.google.android.material.R.attr.materialButtonOutlinedStyle);
-                prevBtn.setText("◀ Prev");
-                Button nextBtn = new Button(context, null, com.google.android.material.R.attr.materialButtonOutlinedStyle);
-                nextBtn.setText("Next ▶");
-
-                navLayout.addView(prevBtn);
-                navLayout.addView(nextBtn);
-                root.addView(navLayout);
-
-                final Bitmap[] currentBitmap = new Bitmap[1];
-
-                Runnable renderPage = () -> {
-                    try {
-                        PdfRenderer.Page page = finalRenderer.openPage(currentPage[0]);
-                        int screenWidth = context.getResources().getDisplayMetrics().widthPixels - (pad * 4);
-                        if (screenWidth <= 0) screenWidth = 800;
-                        int targetWidth = screenWidth;
-                        int targetHeight = (int) ((float) page.getHeight() / page.getWidth() * targetWidth);
-
-                        Bitmap bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
-                        bitmap.eraseColor(Color.WHITE);
-                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
-                        page.close();
-
-                        if (currentBitmap[0] != null && !currentBitmap[0].isRecycled()) {
-                            currentBitmap[0].recycle();
-                        }
-                        currentBitmap[0] = bitmap;
-
-                        pageImageView.setImageBitmap(bitmap);
-                        pageInfo.setText((currentPage[0] + 1) + " / " + pageCount);
-                        prevBtn.setEnabled(currentPage[0] > 0);
-                        nextBtn.setEnabled(currentPage[0] < pageCount - 1);
-                    } catch (Exception e) {
-                        new ErrorUtil(context).showError(e);
-                    }
-                };
-
-                prevBtn.setOnClickListener(v -> {
-                    if (currentPage[0] > 0) {
-                        currentPage[0]--;
-                        renderPage.run();
-                    }
-                });
-
-                nextBtn.setOnClickListener(v -> {
-                    if (currentPage[0] < pageCount - 1) {
-                        currentPage[0]++;
-                        renderPage.run();
-                    }
-                });
-
-                renderPage.run();
-
-                ScrollView scroll = new ScrollView(context);
-                scroll.addView(root);
-
-                AlertDialog dialog = dialogUtil.getDialogBuilder()
-                        .setTitle(fileName)
-                        .setView(scroll)
-                        .setNeutralButton(R.string.open_with, (d, which) -> showAppsForMime(readable, fileName, "application/pdf"))
-                        .setPositiveButton(android.R.string.ok, null)
-                        .create();
-
-                dialog.setOnDismissListener(d -> {
-                    try {
-                        if (currentBitmap[0] != null && !currentBitmap[0].isRecycled()) {
-                            currentBitmap[0].recycle();
-                        }
-                        finalRenderer.close();
-                        finalPfd.close();
-                    } catch (Exception ignored) {}
-                });
-
-                dialogUtil.styleAlertDialog(dialog);
-            } catch (Exception e) {
-                try {
-                    if (renderer != null) renderer.close();
-                    if (pfd != null) pfd.close();
-                } catch (Exception ignored) {}
-                new ErrorUtil(context).showError(e);
-            }
+            Intent intent = new Intent(context, io.github.abdurazaaqmohammed.ui.viewer.PdfViewerActivity.class)
+                    .putExtra(io.github.abdurazaaqmohammed.ui.viewer.PdfViewerActivity.EXTRA_FILE_PATH, readable.getAbsolutePath())
+                    .putExtra(io.github.abdurazaaqmohammed.ui.viewer.PdfViewerActivity.EXTRA_FILE_NAME, fileName);
+            context.startActivity(intent);
         });
     }
 
@@ -1174,40 +1108,211 @@ public class FileOpener {
     }
 
 
+    private void openElfFileDefault(File file, String fileName, File originalFile) {
+        boolean isElf = false;
+        boolean isArm64 = false;
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r");
+             ElfParser elf = new ElfParser(raf)) {
+            isElf = true;
+            isArm64 = (elf.is64 && elf.machine == 0xB7);
+        } catch (Exception ignored) {}
+
+        if (isArm64 || isElf) {
+            openArm64Disassembler(file, originalFile);
+        } else {
+            openHexEditorWithOriginal(file, originalFile);
+        }
+    }
+
+    /** Upper bound of dialog.elf.extra options appended to the dialog. */
+    private static final int MAX_ELF_HOOK_OPTIONS = 16;
+
     private void showElfOptionsDialog(File file, String fileName, File originalFile) {
-        String[] options = {
-                context.getString(R.string.hex_editor),
-                "ELF Inspector",
-                context.getString(R.string.text_editor),
-                context.getString(R.string.open_with)
-        };
+        boolean isElf = false;
+        boolean isArm64 = false;
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r");
+             ElfParser elf = new ElfParser(raf)) {
+            isElf = true;
+            isArm64 = (elf.is64 && elf.machine == 0xB7);
+        } catch (Exception ignored) {}
+
+        List<String> optionsList = new ArrayList<>();
+        if (isArm64 || isElf) {
+            optionsList.add("ARM64 Disassembler");
+        }
+        optionsList.add(context.getString(R.string.hex_editor));
+        optionsList.add(context.getString(R.string.text_editor));
+        optionsList.add(context.getString(R.string.open_with));
+        final int builtinCount = optionsList.size();
+
+        // dialog.elf.extra hooks, appended after the built-in options. The
+        // parent registry applies order/hiding and filters disabled packages;
+        // only dedup and the dialog-friendliness cap are added here.
+        List<ExternalActions.Entry> elfHooks = new ArrayList<>();
+        try {
+            Set<String> seenHookIds = new HashSet<>();
+            for (ExternalActions.Entry e : HookRegistry.visibleEntries(context,
+                    PluginContracts.HOOK_ELF_DIALOG_EXTRA)) {
+                if (e == null || e.id == null || e.plugin == null) continue;
+                if (!seenHookIds.add(e.id)) continue;
+                if (elfHooks.size() >= MAX_ELF_HOOK_OPTIONS) break;
+                elfHooks.add(e);
+                optionsList.add(e.title == null || e.title.isEmpty() ? e.id : e.title);
+            }
+        } catch (Exception ignored) {
+        }
+
+        String[] options = optionsList.toArray(new String[0]);
+        final boolean hasArm64 = isArm64;
 
         AlertDialog dialog = dialogUtil.getDialogBuilder()
                 .setTitle("ELF: " + fileName)
                 .setItems(options, (d, which) -> {
-                    switch (which) {
+                    if (which >= builtinCount) {
+                        int hookIndex = which - builtinCount;
+                        if (hookIndex >= 0 && hookIndex < elfHooks.size()) {
+                            runElfHookAction(elfHooks.get(hookIndex), file);
+                        }
+                        return;
+                    }
+                    int action = which;
+                    if (hasArm64) {
+                        if (action == 0) {
+                            openArm64Disassembler(file, originalFile);
+                            return;
+                        }
+                        action--;
+                    }
+                    switch (action) {
                         case 0 -> openHexEditorWithOriginal(file, originalFile);
-                        case 1 -> showElfInspectorDialog(file, fileName, originalFile);
-                        case 2 -> openTextEditorWithOriginal(file, originalFile);
-                        case 3 -> showOpenWithDialog(file, fileName, null, null, originalFile);
+                        case 1 -> openTextEditorWithOriginal(file, originalFile);
+                        case 2 -> showOpenWithDialog(file, fileName, null, null, originalFile);
                     }
                 })
                 .setNegativeButton(android.R.string.cancel, null)
                 .create();
-        dialog.setOnShowListener(d -> {
-            ListView lv = dialog.getListView();
-            if (lv != null) {
-                lv.setOnItemLongClickListener((parent, view, position, id) -> {
-                    if (position == 1) { // Long press on "ELF Inspector"
-                        dialog.dismiss();
-                        exportElfReadableCodeToDownload(file, fileName);
-                        return true;
+        dialogUtil.styleAlertDialog(dialog);
+    }
+
+    /**
+     * Runs one dialog.elf.extra hook entry against the ELF. The file is
+     * resolved to a host-readable source, then shared strictly as a read-only
+     * content URI through the shared file-action runner (same code path as
+     * the file menu). When the source sits outside the FileProvider roots, a
+     * sanitized private cache copy is staged instead and deleted on the
+     * result, cancel included. Grants are intent-flag-only (one-shot,
+     * Android-managed); no raw path and no persistent grant crosses over.
+     */
+    private void runElfHookAction(ExternalActions.Entry entry, File file) {
+        if (entry == null || entry.plugin == null || file == null) return;
+        withReadableCopy(file, readable -> {
+            File fallbackCopy = null;
+            boolean handedOff = false;
+            try {
+                if (readable == null || !readable.isFile()) {
+                    Extensions.showMessage(context, R.string.cannot_open_item);
+                    return;
+                }
+                List<File> files = new ArrayList<>();
+                files.add(readable);
+                List<Uri> uris = ExternalActions.stageUris(context, files);
+                if (uris == null || uris.size() != 1) {
+                    fallbackCopy = stagePrivateReadableCopy(readable);
+                    if (fallbackCopy == null || fileProviderUri(fallbackCopy) == null) {
+                        if (fallbackCopy != null) {
+                            try { fallbackCopy.delete(); } catch (Exception ignored) {}
+                        }
+                        Extensions.showMessage(context, R.string.cannot_open_item);
+                        return;
                     }
-                    return false;
-                });
+                    List<Uri> single = new ArrayList<>();
+                    single.add(fileProviderUri(fallbackCopy));
+                    uris = single;
+                }
+                final File cleanupCopy = fallbackCopy;
+                MainFilesArrayAdapter.runExternalFileAction(context, entry, files, uris,
+                        cleanupCopy == null ? null : () -> {
+                            try { cleanupCopy.delete(); } catch (Exception ignored) {}
+                        });
+                handedOff = true;
+            } catch (Exception ignored) {
+            } finally {
+                if (!handedOff && fallbackCopy != null) {
+                    try { fallbackCopy.delete(); } catch (Exception ignored) {}
+                }
             }
         });
-        dialogUtil.styleAlertDialog(dialog);
+    }
+
+    /**
+     * Private cache staging fallback for sources the FileProvider cannot
+     * describe: collision-safe sanitized name, plain stream copy. The copy
+     * stays host-private until the shared runner shares it as a read-only
+     * content URI scoped to the clicked plugin, and the caller deletes it on
+     * result.
+     */
+    private File stagePrivateReadableCopy(File source) {
+        try {
+            if (source == null || !source.isFile()) return null;
+            String name = source.getName() == null ? "file" : source.getName();
+            name = name.replace('/', '_').replace('\\', '_');
+            String base = name;
+            String ext = "";
+            int dot = name.lastIndexOf('.');
+            if (dot >= 0) {
+                base = name.substring(0, dot);
+                ext = name.substring(dot);
+            }
+            if (base.length() > 48) base = base.substring(0, 48);
+            if (base.isEmpty()) base = "file";
+            File stageDir = new File(context.getCacheDir(), "elf_hook_stage");
+            if (!stageDir.exists() && !stageDir.mkdirs()) return null;
+            File out = new File(stageDir, "elf_stage_"
+                    + UUID.randomUUID().toString().substring(0, 8) + "_" + base + ext);
+            try (InputStream in = new FileInputStream(source);
+                 FileOutputStream fout = new FileOutputStream(out)) {
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) != -1) fout.write(buf, 0, n);
+            }
+            return out;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Fires the consented file.opened event after a user-initiated open has
+     * actually dispatched (viewer/editor/activity started). Metadata only:
+     * display name plus extension-derived mime; never a path, URI or file
+     * content. Placed at the leaf launch points so dialogs, menu builds and
+     * failed opens never emit.
+     */
+    private void notifyFileOpened(File opened) {
+        try {
+            String name = opened == null ? null : opened.getName();
+            if (name == null || name.isEmpty()) return;
+            PluginEvents.fileOpened(context, name,
+                    MimeUtil.getMimeTypeFromExtension(name));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void openArm64Disassembler(File file, File originalFile) {
+        File orig = originalFile != null ? originalFile : file;
+        File stagedArchive = DexTools.archiveForStagedFile(orig.getPath());
+        Intent intent = new Intent(context, Arm64DisassemblerActivity.class)
+                .putExtra(Arm64DisassemblerActivity.EXTRA_SO_PATH, file.getAbsolutePath())
+                .putExtra(Arm64DisassemblerActivity.EXTRA_ORIGINAL_PATH, orig.getAbsolutePath());
+        if (stagedArchive != null) {
+            intent.putExtra("zipFilePath", stagedArchive.getAbsolutePath());
+        }
+        if (context instanceof MainActivity) {
+            ((MainActivity) context).startActivityForResult(intent, 757);
+        } else {
+            context.startActivity(intent);
+        }
+        notifyFileOpened(file);
     }
 
     public static boolean isKernelFile(File file, String fileName) {
@@ -1355,316 +1460,6 @@ public class FileOpener {
         }).start();
     }
 
-    private void exportElfReadableCodeToDownload(File file, String fileName) {
-        ProgressManager pm = new ProgressManager(context, true).show();
-        pm.setText(context.getString(R.string.exporting));
-
-        new Thread(() -> {
-            try {
-                String content = generateElfReadableCode(file, fileName);
-                File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                if (!downloadDir.exists()) downloadDir.mkdirs();
-
-                File exportFile = new File(downloadDir, fileName + "_decompiled.txt");
-                int counter = 1;
-                while (exportFile.exists()) {
-                    exportFile = new File(downloadDir, fileName + "_decompiled_" + counter + ".txt");
-                    counter++;
-                }
-
-                try (FileOutputStream fos = new FileOutputStream(exportFile)) {
-                    fos.write(content.getBytes(StandardCharsets.UTF_8));
-                }
-
-                final File finalExportFile = exportFile;
-                context.runOnUiThread(() -> {
-                    pm.dismiss();
-                    context.refreshPane(true);
-                    Toast.makeText(context, "Exported: " + finalExportFile.getName() + " to Download", Toast.LENGTH_LONG).show();
-                });
-            } catch (Exception e) {
-                context.runOnUiThread(() -> {
-                    pm.dismiss();
-                    new ErrorUtil(context).showError(e);
-                });
-            }
-        }).start();
-    }
-
-    private String generateElfReadableCode(File file, String fileName) throws Exception {
-        try (RandomAccessFile raf = new RandomAccessFile(file, "r");
-             ElfParser elf = new ElfParser(raf)) {
-            StringBuilder sb = new StringBuilder();
-            sb.append("// =====================================================================\n");
-            sb.append("// DECOMPILED ELF SUMMARY & READABLE CODE\n");
-            sb.append("// File: ").append(fileName).append(" (").append(file.length()).append(" bytes)\n");
-            sb.append("// Format: ELF ").append(elf.is64 ? "64-bit" : "32-bit").append(" (Little-Endian)\n");
-            sb.append("// Architecture: ").append(ElfParser.machineName(elf.machine))
-                    .append(" (0x").append(Integer.toHexString(elf.machine)).append(")\n");
-            sb.append("// Entry Point: 0x").append(Long.toHexString(elf.entry)).append("\n");
-            sb.append("// =====================================================================\n\n");
-
-            // 1. Dependencies & Dynamic Info
-            Map<String, String> dyn = elf.dynamicInfo();
-            if (!dyn.isEmpty()) {
-                sb.append("// =================== [1] SHARED LIBRARIES & METADATA ===================\n");
-                if (dyn.containsKey("soname")) {
-                    sb.append("// Internal Library Name (SONAME): ").append(dyn.get("soname")).append("\n");
-                }
-                if (dyn.containsKey("needed")) {
-                    sb.append("// Imported Dependencies (DT_NEEDED):\n");
-                    for (String lib : dyn.get("needed").split(",\\s*")) {
-                        sb.append("#include <").append(lib.trim()).append(">\n");
-                    }
-                }
-                sb.append("\n");
-            }
-
-            // 2. Symbols & Functions
-            List<ElfParser.Symbol> allSymbols = new ArrayList<>();
-            try {
-                allSymbols.addAll(elf.symbols(".dynsym"));
-            } catch (Exception ignored) {}
-            try {
-                List<ElfParser.Symbol> symtab = elf.symbols(".symtab");
-                if (symtab != null && !symtab.isEmpty()) allSymbols.addAll(symtab);
-            } catch (Exception ignored) {}
-
-            List<ElfParser.Symbol> exports = new ArrayList<>();
-            List<ElfParser.Symbol> jniFuncs = new ArrayList<>();
-            List<ElfParser.Symbol> imports = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
-
-            for (ElfParser.Symbol s : allSymbols) {
-                if (s.name == null || s.name.isEmpty() || !seen.add(s.name)) continue;
-                if (s.name.startsWith("Java_") || s.name.contains("JNI_OnLoad") || s.name.contains("JNI_OnUnload")) {
-                    jniFuncs.add(s);
-                } else if (s.shndx == 0) {
-                    imports.add(s);
-                } else if (s.type == 2 /* FUNC */ || s.type == 10 /* IFUNC */) {
-                    exports.add(s);
-                }
-            }
-
-            if (!jniFuncs.isEmpty()) {
-                sb.append("// =================== [2] JNI EXPORTED METHODS (JAVA BINDINGS) ===================\n");
-                sb.append("extern \"C\" {\n");
-                for (ElfParser.Symbol jni : jniFuncs) {
-                    sb.append("    // Addr: 0x").append(Long.toHexString(jni.value))
-                            .append(" | Size: ").append(jni.size).append("\n");
-                    sb.append("    JNIEXPORT void JNICALL ").append(jni.name).append("(JNIEnv* env, jobject thiz);\n\n");
-                }
-                sb.append("}\n\n");
-            }
-
-            if (!exports.isEmpty()) {
-                sb.append("// =================== [3] DEFINED FUNCTIONS (CODE LOGIC) ===================\n");
-                for (ElfParser.Symbol exp : exports) {
-                    sb.append("// [FUNC] 0x").append(Long.toHexString(exp.value))
-                            .append(" (size: ").append(exp.size).append(" bytes) [")
-                            .append(exp.bindName()).append("]\n");
-                    sb.append("int ").append(exp.name).append("();\n");
-                }
-                sb.append("\n");
-            }
-
-            if (!imports.isEmpty()) {
-                sb.append("// =================== [4] IMPORTED SYSTEM CALLS & API FUNCTIONS ===================\n");
-                sb.append("// External functions invoked by this binary (reveals capabilities):\n");
-                for (ElfParser.Symbol imp : imports) {
-                    sb.append("extern int ").append(imp.name).append("();\n");
-                }
-                sb.append("\n");
-            }
-
-            // 3. Sections Overview
-            sb.append("// =================== [5] ELF SECTIONS ===================\n");
-            for (ElfParser.Section sec : elf.sections()) {
-                sb.append(String.format(Locale.ROOT, "// %-20s  offset: 0x%08x  size: %-8d  addr: 0x%08x\n",
-                        sec.name, sec.offset, sec.size, sec.addr));
-            }
-            sb.append("\n");
-
-            // 4. Embedded Strings, URLs, Paths, and Commands
-            sb.append("// =================== [6] EMBEDDED STRINGS, COMMANDS & URLS ===================\n");
-            List<String[]> rodataStrings = new ArrayList<>();
-            try {
-                rodataStrings.addAll(elf.strings(".rodata", 4, 1500));
-            } catch (Exception ignored) {}
-            try {
-                rodataStrings.addAll(elf.strings(".data", 4, 500));
-            } catch (Exception ignored) {}
-
-            if (rodataStrings.size() < 10) {
-                extractGenericStrings(file, 4, 2000, rodataStrings);
-            }
-
-            Set<String> seenStrings = new HashSet<>();
-            List<String> pathsAndCommands = new ArrayList<>();
-            List<String> urlsAndWeb = new ArrayList<>();
-            List<String> otherStrings = new ArrayList<>();
-
-            for (String[] entry : rodataStrings) {
-                String str = entry[1].trim();
-                if (str.length() < 3 || !seenStrings.add(str)) continue;
-                if (str.startsWith("http://") || str.startsWith("https://") || str.startsWith("ftp://")) {
-                    urlsAndWeb.add(entry[0] + ": " + str);
-                } else if (str.startsWith("/") || str.contains("/bin/") || str.contains("/system/") || str.startsWith("su ") || str.startsWith("sh ")) {
-                    pathsAndCommands.add(entry[0] + ": " + str);
-                } else {
-                    otherStrings.add(entry[0] + ": " + str);
-                }
-            }
-
-            if (!urlsAndWeb.isEmpty()) {
-                sb.append("// --- Network Endpoints & URLs ---\n");
-                for (String s : urlsAndWeb) sb.append(s).append("\n");
-                sb.append("\n");
-            }
-
-            if (!pathsAndCommands.isEmpty()) {
-                sb.append("// --- System Paths & Shell Commands ---\n");
-                for (String s : pathsAndCommands) sb.append(s).append("\n");
-                sb.append("\n");
-            }
-
-            if (!otherStrings.isEmpty()) {
-                sb.append("// --- Error Messages, Format Strings & Identifiers ---\n");
-                for (String s : otherStrings) sb.append(s).append("\n");
-                sb.append("\n");
-            }
-
-            return sb.toString();
-        }
-    }
-
-    private static void extractGenericStrings(File file, int minLen, int maxResults, List<String[]> out) {
-        try (InputStream in = new BufferedInputStream(new FileInputStream(file))) {
-            byte[] buf = new byte[64 * 1024];
-            ByteArrayOutputStream cur = new ByteArrayOutputStream();
-            long offset = 0;
-            long strStart = 0;
-            int n;
-            while ((n = in.read(buf)) != -1 && out.size() < maxResults) {
-                for (int i = 0; i < n && out.size() < maxResults; i++) {
-                    byte b = buf[i];
-                    if (b >= 0x20 && b <= 0x7E) {
-                        if (cur.size() == 0) strStart = offset + i;
-                        cur.write(b);
-                    } else {
-                        if (cur.size() >= minLen) {
-                            out.add(new String[]{"0x" + Long.toHexString(strStart), cur.toString("UTF-8")});
-                        }
-                        cur.reset();
-                    }
-                }
-                offset += n;
-            }
-            if (cur.size() >= minLen && out.size() < maxResults) {
-                out.add(new String[]{"0x" + Long.toHexString(strStart), cur.toString("UTF-8")});
-            }
-        } catch (Exception ignored) {}
-    }
-
-    private void showElfInspectorDialog(File file, String fileName, File originalFile) {
-        final File targetOriginal = originalFile != null ? originalFile : file;
-        new Thread(() -> {
-            try (RandomAccessFile raf = new RandomAccessFile(file, "r");
-                 ElfParser elf = new ElfParser(raf)) {
-                final AlertDialog[] dialogRef = new AlertDialog[1];
-                SpannableStringBuilder ssb = new SpannableStringBuilder();
-                ssb.append("File: ").append(fileName).append("\n");
-                ssb.append("Format: ELF ").append(elf.is64 ? "64-bit" : "32-bit").append("\n");
-                ssb.append("Architecture: ").append(ElfParser.machineName(elf.machine))
-                        .append(" (0x").append(Integer.toHexString(elf.machine)).append(")\n");
-
-                ssb.append("Entry point: ");
-                String entryAddrStr = "0x" + Long.toHexString(elf.entry);
-                int entryStart = ssb.length();
-                ssb.append(entryAddrStr);
-                int entryEnd = ssb.length();
-                final long entryOffset = elf.entry;
-                ssb.setSpan(new ClickableSpan() {
-                    @Override
-                    public void onClick(@NonNull View widget) {
-                        openHexEditorWithOriginal(file, targetOriginal, entryOffset);
-                    }
-                    @Override
-                    public void updateDrawState(@NonNull TextPaint ds) {
-                        super.updateDrawState(ds);
-                        ds.setColor(0xFF29B6F6);
-                        ds.setUnderlineText(true);
-                    }
-                }, entryStart, entryEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                ssb.append("\n");
-
-                ssb.append("Size: ").append(Formatter.formatFileSize(context, file.length())).append("\n\n");
-
-                ElfParser.Section[] sections = elf.sections();
-                if (sections != null && sections.length > 0) {
-                    ssb.append("--- Sections (").append(String.valueOf(sections.length)).append(") ---\n");
-                    for (ElfParser.Section s : sections) {
-                        if (s != null && s.name != null && !s.name.isEmpty()) {
-                            ssb.append(String.format(Locale.ROOT, "%-16s ", s.name));
-                            String addrStr = String.format(Locale.ROOT, "addr:0x%08x", s.addr);
-                            int addrStart = ssb.length();
-                            ssb.append(addrStr);
-                            int addrEnd = ssb.length();
-                            final long targetOffset = s.offset > 0 ? s.offset : s.addr;
-                            ssb.setSpan(new ClickableSpan() {
-                                @Override
-                                public void onClick(@NonNull View widget) {
-                                    openHexEditorWithOriginal(file, targetOriginal, targetOffset);
-                                }
-                                @Override
-                                public void updateDrawState(@NonNull TextPaint ds) {
-                                    super.updateDrawState(ds);
-                                    ds.setColor(0xFF29B6F6);
-                                    ds.setUnderlineText(true);
-                                }
-                            }, addrStart, addrEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                            ssb.append(String.format(Locale.ROOT, " size:0x%x\n", s.size));
-                        }
-                    }
-                    ssb.append("\n");
-                }
-
-                Map<String, String> dyn = elf.dynamicInfo();
-                if (dyn != null && !dyn.isEmpty()) {
-                    ssb.append("--- Dynamic / Dependencies ---\n");
-                    for (Map.Entry<String, String> entry : dyn.entrySet()) {
-                        ssb.append(entry.getKey()).append(": ").append(entry.getValue()).append("\n");
-                    }
-                }
-
-                context.runOnUiThread(() -> {
-                    ScrollView sv = new ScrollView(context);
-                    HorizontalScrollView hsv = new HorizontalScrollView(context);
-                    TextView tv = new TextView(context);
-                    tv.setText(ssb);
-                    tv.setTypeface(Typeface.MONOSPACE);
-                    tv.setTextSize(13);
-                    int pad = (int) (16 * context.getResources().getDisplayMetrics().density + 0.5f);
-                    tv.setPadding(pad, pad, pad, pad);
-                    tv.setMovementMethod(LinkMovementMethod.getInstance());
-                    tv.setHighlightColor(Color.TRANSPARENT);
-                    hsv.addView(tv);
-                    sv.addView(hsv);
-
-                    AlertDialog dialog = dialogUtil.getDialogBuilder()
-                            .setTitle("ELF: " + fileName)
-                            .setView(sv)
-                            .setPositiveButton(android.R.string.ok, null)
-                            .setNeutralButton(R.string.hex_editor, (d, w) -> openHexEditorWithOriginal(file, targetOriginal))
-                            .create();
-                    dialogRef[0] = dialog;
-                    dialogUtil.styleAlertDialog(dialog);
-                });
-            } catch (Exception e) {
-                context.runOnUiThread(() -> new ErrorUtil(context).showError(e));
-            }
-        }).start();
-    }
 
     private void showXmlFunctions(File file, String fileName) {
         withReadableCopy(file, readable -> {
@@ -1920,8 +1715,8 @@ public class FileOpener {
             || fileName.endsWith(".yaml") || fileName.endsWith(".yml") || fileName.endsWith(".toml")
             || fileName.endsWith(".rc")) {
             openTextEditorRootAware(file);
-        } else if (FileUtils.isElfFile(file)) {
-            withReadableCopy(file, readable -> showElfOptionsDialog(readable, fileName, file));
+        } else if (FileUtils.isElf(fileName) || FileUtils.isElfFile(file)) {
+            withReadableCopy(file, readable -> openElfFileDefault(readable, fileName, file));
         } else if (isKernelFile(file, fileName)) {
             withReadableCopy(file, readable -> showKernelOptionsDialog(readable, fileName, file));
         } else if (fileName.endsWith(".img") || fileName.endsWith(".iso") || file.getAbsolutePath().startsWith("/dev/block/")) {
@@ -1937,8 +1732,11 @@ public class FileOpener {
         } else if (("payload.bin".equalsIgnoreCase(fileName) || fileName.endsWith(".bin") || fileName.endsWith(".payload")) && PayloadParser.isPayload(file)) {
             PayloadDialog.showForPayload(context, file, pane1);
         } else if(HashUtil.isChecksumFile(fileName)) {
+            // Entry names resolve next to the manifest: when the manifest was
+            // staged from an elevated folder, keep the original parent as the
+            // base dir instead of the staging cache.
             withReadableCopy(file, readable -> {
-                if (checksumDialogs != null) checksumDialogs.showHashVerifyDialog(readable);
+                if (checksumDialogs != null) checksumDialogs.showHashVerifyDialog(readable, file.getParentFile());
                 else openWithDefaultOrDialog(readable, fileName);
             });
         } else if (fileName.endsWith(".xml") || fileName.endsWith(".axml")
@@ -1952,6 +1750,7 @@ public class FileOpener {
                     // "Failure from system" (TransactionTooLargeException).
                     context.startActivity(rootAwareEditorIntent(readable, file)
                             .putExtra("path", readable.getPath()));
+                    notifyFileOpened(readable);
                 } catch (Exception e) {
                     new ErrorUtil(context).showError(e);
                 }
@@ -1963,13 +1762,18 @@ public class FileOpener {
                 } else {
                     context.openImageViewer(readable.getPath());
                 }
+                notifyFileOpened(readable);
             });
         } else if (FileUtils.matchExt(ext, FileUtils.AUDIO_EXTS) || FileUtils.matchExt(ext, FileUtils.VIDEO_EXTS)) {
-            withReadableCopy(file, readable -> context.playMediaFile(readable.getPath()));
+            withReadableCopy(file, readable -> {
+                context.playMediaFile(readable.getPath());
+                notifyFileOpened(readable);
+            });
         } else if ((ext.equals(".apk"))) {
             withReadableCopy(file, readable -> {
                 if (apkTools != null) apkTools.showApkInfoDialog(readable, fileName);
                 else openWithDefaultOrDialog(readable, fileName);
+                notifyFileOpened(readable);
             });
         } else {
             if (fileName.endsWith(".arsc")) {
@@ -2013,28 +1817,25 @@ public class FileOpener {
     }
 
     private void promptUnsparseImage(File file, String fileName) {
-        boolean isAr = Locale.getDefault().getLanguage().startsWith("ar");
         SystemImageEngine.SparseInfo sInfo =
                 SystemImageEngine.readSparseInfo(file);
         long uncompressedSize = (sInfo != null) ? sInfo.uncompressedSizeBytes : 0;
-        String sizeStr = uncompressedSize > 0 ? ("\n\n" + (isAr ? "الحجم بعد فك الضغط: " : "Uncompressed Size: ") +
+        String sizeStr = uncompressedSize > 0 ? context.getString(R.string.unsparse_size_prefix,
                 FileSize.getHumanReadableFileSize(uncompressedSize)) : "";
 
-        String msg = (isAr
-                ? "هذا الملف عبارة عن صورة أندرويد مضغوطة (Android Sparse Image).\nهل تريد فك ضغطها إلى صورة خام Raw Image (.img)؟"
-                : "This file is a compressed Android Sparse Image.\nWould you like to unsparse it into a raw image (.img)?") + sizeStr;
+        String msg = context.getString(R.string.unsparse_image_msg) + sizeStr;
 
         new MaterialAlertDialogBuilder(context)
-                .setTitle(isAr ? "فك ضغط Sparse Image" : "Unsparse Image")
+                .setTitle(R.string.unsparse_image_title)
                 .setMessage(msg)
-                .setPositiveButton(isAr ? "📂 فك الضغط" : "📂 Unsparse", (d, w) -> {
+                .setPositiveButton(R.string.unsparse_btn, (d, w) -> {
                     String baseName = fileName;
                     int dotIdx = baseName.lastIndexOf('.');
                     if (dotIdx > 0) baseName = baseName.substring(0, dotIdx);
                     File outRaw = new File(file.getParentFile(), baseName + "_raw.img");
 
                     ProgressManager pm = new ProgressManager(context, false).show();
-                    pm.setText(isAr ? ("جاري فك ضغط " + fileName + "...") : ("Unsparsing " + fileName + "..."));
+                    pm.setText(context.getString(R.string.unsparsing_progress, fileName));
 
                     new Thread(() -> {
                         try {
@@ -2061,7 +1862,7 @@ public class FileOpener {
                                     context.runOnUiThread(() -> {
                                         pm.dismiss();
                                         Toast.makeText(context,
-                                                (isAr ? "تم فك الضغط بنجاح: " : "Unsparsed successfully: ") + result.getName(),
+                                                context.getString(R.string.unsparsed_success, result.getName()),
                                                 Toast.LENGTH_LONG).show();
                                         context.reloadCurrentFolder();
                                     });
@@ -2217,10 +2018,10 @@ public class FileOpener {
     private long getRootFolderSize(String path) {
         try {
             if (!PrivilegeManager.Files.fileOpsOn(context)) return 0;
-            String cmd = "du -sb " + RootManager.escapeShellArg(path);
+            String cmd = "du -sb " + ShellQuote.escapeShellArg(path);
             String out = null;
             if (PrivilegeManager.Files.active(context) == PrivilegeManager.Backend.ROOT) {
-                RootManager.ShellResult r = RootManager.getInstance(context).execute(cmd, 5);
+                ShellSession.ShellResult r = PrivilegeManager.Root.execute(context, cmd, 5);
                 if (r != null && r.isSuccess()) out = r.output();
             } else if (PrivilegeManager.Shizuku.ready()) {
                 ShellSession.Result r = PrivilegeManager.shizuku().exec(cmd, 5);
@@ -2236,7 +2037,8 @@ public class FileOpener {
 
     private long calculateZipEntryFolderSize(ZipEntryInfo entry) {
         if (entry == null || entry.getZipFile() == null) return 0;
-        try (ZipFile srcZip = new ZipFile(entry.getZipFile())) {
+        // Charset applied so the prefix matches the browsed entry names.
+        try (ZipFile srcZip = ZipCompat.openZip(entry.getZipFile())) {
             String prefix = entry.getFullPath();
             if (!prefix.endsWith("/")) prefix += "/";
             long total = 0;
@@ -2318,7 +2120,7 @@ public class FileOpener {
                 if (zipFile.exists()) zipFile.delete();
 
                 File sourceToCompress = folder;
-                if (RootStaging.needsStaging(context, folder)) {
+                if (PrivilegeManager.Staging.needsStaging(context, folder)) {
                     stagedDir = new File(context.getCacheDir(), "stage_share_" + System.currentTimeMillis());
                     stagedDir.mkdirs();
                     sourceToCompress = new File(stagedDir, folder.getName());
@@ -2397,7 +2199,7 @@ public class FileOpener {
                 try (ZipFile zf = new ZipFile(zipFile)) {
                     for (File f : files) {
                         File source = f;
-                        if (RootStaging.needsStaging(context, f)) {
+                        if (PrivilegeManager.Staging.needsStaging(context, f)) {
                             if (stagedDir == null) {
                                 stagedDir = new File(context.getCacheDir(), "stage_share_" + System.currentTimeMillis());
                                 stagedDir.mkdirs();
@@ -2477,7 +2279,7 @@ public class FileOpener {
                 try (ZipFile zf = new ZipFile(zipFile)) {
                     for (File f : folders) {
                         File source = f;
-                        if (RootStaging.needsStaging(context, f)) {
+                        if (PrivilegeManager.Staging.needsStaging(context, f)) {
                             if (stagedDir == null) {
                                 stagedDir = new File(context.getCacheDir(), "stage_share_" + System.currentTimeMillis());
                                 stagedDir.mkdirs();
@@ -2498,7 +2300,7 @@ public class FileOpener {
                         File readableFile = sf;
                         if (SafFs.isSaf(sf) || !(sf.exists() && sf.canRead() && appReadable(sf))) {
                             if (PrivilegeManager.Files.fileOpsOn(context)) {
-                                readableFile = RootStaging.stageForRead(context, sf.getAbsolutePath());
+                                readableFile = PrivilegeManager.Staging.stageForRead(context, sf.getAbsolutePath());
                             }
                         }
                         if (readableFile != null && readableFile.exists()) {
@@ -2597,7 +2399,7 @@ public class FileOpener {
                 File extractTarget = new File(stageExtractDir, entry.getName());
                 extractTarget.mkdirs();
 
-                try (ZipFile srcZip = new ZipFile(entry.getZipFile())) {
+                try (ZipFile srcZip = ZipCompat.openZip(entry.getZipFile())) {
                     String prefix = entry.getFullPath();
                     if (!prefix.endsWith("/")) prefix += "/";
                     for (FileHeader fh : srcZip.getFileHeaders()) {
@@ -2653,7 +2455,7 @@ public class FileOpener {
 
     private static boolean appReadable(File file) {
         try {
-            if (file instanceof ShizukuFile)
+            if (PrivilegeManager.Shizuku.isAndroidDataPath(file))
                 return new File(file.getAbsolutePath()).canRead();
             return true;
         } catch (Exception e) {
@@ -2672,7 +2474,7 @@ public class FileOpener {
             Extensions.showMessage(context, R.string.reading_from_provider);
             new Thread(() -> {
                 try {
-                    File staged = RootStaging.stageForRead(context, file.getAbsolutePath());
+                    File staged = PrivilegeManager.Staging.stageForRead(context, file.getAbsolutePath());
                     context.handler.post(() -> {
                         try {
                             cb.onReady(staged);
@@ -2707,14 +2509,14 @@ public class FileOpener {
             new ErrorUtil(context).showError(e);
             return;
         }
-        if (!PrivilegeManager.Files.fileOpsOn(context) && io.github.abdurazaaqmohammed.privilege.impl.AccessManager.active(context) == io.github.abdurazaaqmohammed.privilege.impl.AccessManager.Backend.NONE) {
+        if (!PrivilegeManager.Files.fileOpsOn(context) && io.github.abdurazaaqmohammed.privilege.internal.AccessManager.active(context) == io.github.abdurazaaqmohammed.privilege.internal.AccessManager.Backend.NONE) {
             Extensions.showMessage(context, R.string.cannot_open_permission_denied);
             return;
         }
         Extensions.showMessage(context, R.string.reading_with_elevated_access);
         new Thread(() -> {
             try {
-                File staged = RootStaging.stageForRead(context, file.getAbsolutePath());
+                File staged = PrivilegeManager.Staging.stageForRead(context, file.getAbsolutePath());
                 context.handler.post(() -> {
                     try {
                         cb.onReady(staged);
@@ -2733,7 +2535,7 @@ public class FileOpener {
         if (readable != null && original != null
                 && !readable.getAbsolutePath().equals(original.getAbsolutePath())) {
             i.putExtra("rootOriginalPath", original.getAbsolutePath());
-            // The editor saves through RootStaging.writeBack, which streams a
+            // The editor saves through PrivilegeManager.Staging.writeBack, which streams a
             // provider path back into its document; say so instead of "root".
             Extensions.showMessage(context, SafFs.isSaf(original)
                     ? R.string.opened_from_provider : R.string.opened_with_root);
@@ -2742,9 +2544,11 @@ public class FileOpener {
     }
 
     private void openTextEditorRootAware(File file) {
-        withReadableCopy(file, readable ->
-                context.startActivity(rootAwareEditorIntent(readable, file)
-                        .putExtra("path", readable.getAbsolutePath())));
+        withReadableCopy(file, readable -> {
+            context.startActivity(rootAwareEditorIntent(readable, file)
+                    .putExtra("path", readable.getAbsolutePath()));
+            notifyFileOpened(readable);
+        });
     }
 
     private void openTextEditorWithOriginal(File readable, File original) {
@@ -2755,6 +2559,7 @@ public class FileOpener {
         File orig = original != null ? original : readable;
         context.startActivity(rootAwareEditorIntent(readable, orig)
                 .putExtra("path", readable.getAbsolutePath()));
+        notifyFileOpened(readable);
     }
 
     private void openHexEditorWithOriginal(File readable, File original) {
@@ -2777,6 +2582,7 @@ public class FileOpener {
             Extensions.showMessage(context, R.string.opened_with_root);
         }
         context.startActivity(i);
+        notifyFileOpened(readable);
     }
 
     /**
@@ -2816,6 +2622,7 @@ public class FileOpener {
                 Extensions.showMessage(context, R.string.opened_with_root);
             }
             context.startActivity(i);
+            notifyFileOpened(readable);
         });
     }
 
@@ -2823,7 +2630,7 @@ public class FileOpener {
         String bakPath = bakFile.getPath();
         String origPath = origFile.getPath();
         boolean useElevated = PrivilegeManager.Files.fileOpsOn(context)
-                && (RootStaging.needsStaging(context, bakPath) || RootStaging.needsStaging(context, origPath));
+                && (PrivilegeManager.Staging.needsStaging(context, bakPath) || PrivilegeManager.Staging.needsStaging(context, origPath));
         if (useElevated) {
             new Thread(() -> {
                 try {

@@ -298,7 +298,7 @@ public class ClassTree {
 
     public static class CompilationOptions {
         public String dexVersion = "Keep the same";
-        public boolean removeAllDebug = true;
+        public boolean removeAllDebug = false;
         public boolean removeDebugSource = false;
         public boolean removeDebugLine = false;
         public boolean removeDebugParam = false;
@@ -1849,7 +1849,7 @@ public class ClassTree {
             if (options.removeDebugParam || options.removeAllDebug) {
                 List<MethodParameter> params = new ArrayList<>();
                 for (MethodParameter p : delegate.getParameters()) {
-                    params.add(new ImmutableMethodParameter(p.getType(), null, null));
+                    params.add(new ImmutableMethodParameter(p.getType(), p.getAnnotations(), null));
                 }
                 return params;
             }

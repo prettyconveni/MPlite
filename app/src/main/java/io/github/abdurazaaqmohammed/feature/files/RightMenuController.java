@@ -36,6 +36,9 @@ import io.github.abdurazaaqmohammed.MPManager.R;
 import io.github.abdurazaaqmohammed.ui.main.MainFilesArrayAdapter;
 import io.github.codehasan.colorpicker.extensions.Extensions;
 
+import io.github.abdurazaaqmohammed.ui.viewer.PlayerManager;
+import io.github.abdurazaaqmohammed.ui.viewer.MediaItem;
+
 import java.io.File;
 import java.util.List;
 import java.util.Set;
@@ -89,6 +92,14 @@ public class RightMenuController {
         LinearLayout container = activity.findViewById(R.id.rightMenuContainer);
         if (container == null) return;
         container.removeAllViews();
+
+        PlayerManager pm = PlayerManager.getInstance(activity);
+        PlayerManager.PlayState state = pm.getState();
+        if (state == PlayerManager.PlayState.PLAYING || state == PlayerManager.PlayState.PAUSED) {
+            MediaItem item = pm.getCurrentItem();
+            String title = (item != null && item.title != null && !item.title.isEmpty()) ? item.title : activity.getString(R.string.media_player);
+            addRightDrawerItem(container, R.drawable.music_24px, title, v -> activity.showMiniPlayer());
+        }
 
         List<String> order = RightMenuOrder.load(activity);
         Set<String> hidden = RightMenuOrder.getHiddenIds(activity);
@@ -237,7 +248,7 @@ public class RightMenuController {
                     addRightDrawerItem(container, R.drawable.baseline_settings_24, activity.getString(R.string.preferences), v -> activity.showSettingsDialog());
                     break;
                 case RightMenuOrder.EXIT:
-                    addRightDrawerItem(container, R.drawable.baseline_exit_to_app_24, activity.getString(R.string.exit), v -> activity.confirmExitApp());
+                    addRightDrawerItem(container, R.drawable.baseline_exit_to_app_24, activity.getString(R.string.exit), v -> activity.exitApp());
                     break;
             }
         }
