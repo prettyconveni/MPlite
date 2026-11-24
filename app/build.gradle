@@ -22,9 +22,9 @@ android {
             def keystoreFile = file("release.keystore")
             if (keystoreFile.exists()) {
                 storeFile keystoreFile
-                storePassword System.getenv("RELEASE_STORE_PASSWORD") ?: (project.findProperty("RELEASE_STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "")
-                keyAlias System.getenv("RELEASE_KEY_ALIAS") ?: (project.findProperty("RELEASE_KEY_ALIAS") ?: System.getenv("KEY_ALIAS") ?: "")
-                keyPassword System.getenv("RELEASE_KEY_PASSWORD") ?: (project.findProperty("RELEASE_KEY_PASSWORD") ?: System.getenv("KEY_PASSWORD") ?: "")
+                storePassword System.getenv("RELEASE_STORE_PASSWORD") ?: (project.findProperty("RELEASE_STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "000000")
+                keyAlias System.getenv("RELEASE_KEY_ALIAS") ?: (project.findProperty("RELEASE_KEY_ALIAS") ?: System.getenv("KEY_ALIAS") ?: "mido")
+                keyPassword System.getenv("RELEASE_KEY_PASSWORD") ?: (project.findProperty("RELEASE_KEY_PASSWORD") ?: System.getenv("KEY_PASSWORD") ?: "000000")
             }
         }
     }
