@@ -149,6 +149,8 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
         if (isScriptMode) {
             scriptScrollView = new ScrollView(this);
             scriptScrollView.setFillViewport(true);
+            scriptScrollView.setFocusable(false);
+            scriptScrollView.setFocusableInTouchMode(false);
             scriptOutputView = new TextView(this);
             scriptOutputView.setTextColor(0xFFEAEAEA);
             scriptOutputView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
@@ -225,7 +227,7 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
                         lastBottomPad = overlap;
                         insetTarget.setPadding(insetTarget.getPaddingLeft(), insetTarget.getPaddingTop(), insetTarget.getPaddingRight(), overlap);
                         if (isScriptMode && scriptScrollView != null) {
-                            scriptScrollView.post(() -> scriptScrollView.fullScroll(View.FOCUS_DOWN));
+                            scrollScriptToBottom();
                         }
                     }
                 } else if (lastBottomPad > 0) {
@@ -263,9 +265,23 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
             insetTarget.setPadding(sys.left, topPad, sys.right, bottomPad);
         }
         if (isScriptMode && scriptScrollView != null && ime.bottom > 0) {
-            scriptScrollView.post(() -> scriptScrollView.fullScroll(View.FOCUS_DOWN));
+            scrollScriptToBottom();
         }
         return bottomPad;
+    }
+
+    private void scrollScriptToBottom() {
+        if (scriptScrollView == null) return;
+        final boolean hadInputFocus = cmdInput != null && cmdInput.hasFocus();
+        scriptScrollView.post(() -> {
+            if (scriptScrollView == null || scriptScrollView.getChildCount() == 0) return;
+            View child = scriptScrollView.getChildAt(0);
+            int bottom = Math.max(0, child.getBottom() + scriptScrollView.getPaddingBottom() - scriptScrollView.getHeight());
+            scriptScrollView.scrollTo(0, bottom);
+            if (hadInputFocus && cmdInput != null && !cmdInput.hasFocus()) {
+                cmdInput.requestFocus();
+            }
+        });
     }
 
     private View buildInputBar() {
@@ -695,9 +711,11 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
             final String text = changedSession.getEmulator().getScreen().getTranscriptTextWithFullLinesJoined();
             mainHandler.post(() -> {
                 if (!isFinishing() && !isDestroyed() && scriptOutputView != null) {
+                    boolean hadInputFocus = cmdInput != null && cmdInput.hasFocus();
                     scriptOutputView.setText(text != null ? text.replaceFirst("\\s+$", "") : "");
-                    if (scriptScrollView != null) {
-                        scriptScrollView.post(() -> scriptScrollView.fullScroll(View.FOCUS_DOWN));
+                    scrollScriptToBottom();
+                    if (hadInputFocus && cmdInput != null && !cmdInput.hasFocus()) {
+                        cmdInput.requestFocus();
                     }
                 }
             });

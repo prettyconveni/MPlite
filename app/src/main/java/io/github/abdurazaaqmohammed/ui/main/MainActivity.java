@@ -1862,7 +1862,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             loadSafFolderInPane(SafFs.wrap(folder), pane1, addToHistory);
             return;
         }
-        if (!folder.isDirectory() && ArchiveUtil.isSupportedArchive(folder.getName())) {
+        if (folder.isFile() && ArchiveUtil.isSupportedArchive(folder.getName())) {
             loadZipFolderInPane(folder, "", pane1, addToHistory);
             return;
         }
@@ -2588,7 +2588,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
      */
     public void loadFolderInPaneAsync(File folder, boolean pane1, boolean addToHistory, Runnable afterBind) {
         if (folder instanceof RemoteFile || folder instanceof FTPFileWrapper || SafFs.isSaf(folder)
-                || (!folder.isDirectory() && ArchiveUtil.isSupportedArchive(folder.getName()))) {
+                || (folder.isFile() && ArchiveUtil.isSupportedArchive(folder.getName()))) {
             loadFolderInPane(folder, pane1, addToHistory);
             if (afterBind != null) {
                 try {

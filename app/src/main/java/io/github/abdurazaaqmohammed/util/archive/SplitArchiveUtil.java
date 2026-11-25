@@ -29,23 +29,23 @@ public final class SplitArchiveUtil {
 
     // Modern RAR split: name.part1.rar, name.part01.rar, name.pt01.rar
     private static final Pattern PATTERN_PART_RAR =
-            Pattern.compile("^(.*?)[.](?:part|pt)(\\d+)[.](rar)$", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("^(.+)[.](?:part|pt)(\\d+)[.](rar)$", Pattern.CASE_INSENSITIVE);
 
     // Old RAR split: name.rar, name.r00, name.r01, ...
     private static final Pattern PATTERN_OLD_RAR =
-            Pattern.compile("^(.*?)[.](rar|r\\d{2,})$", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("^(.+)[.](rar|r\\d{2,})$", Pattern.CASE_INSENSITIVE);
 
     // Numbered split: name.7z.001, name.zip.001, name.tar.001, name.001, name.01
     private static final Pattern PATTERN_NUMBERED_SPLIT =
-            Pattern.compile("^(.*?)[.](\\d{2,})$", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("^(.+)[.](\\d{2,})$", Pattern.CASE_INSENSITIVE);
 
     // Split ZIP: name.z01, name.z02, ..., name.zip
     private static final Pattern PATTERN_ZIP_SPLIT =
-            Pattern.compile("^(.*?)[.](z\\d{2,}|zip)$", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("^(.+)[.](z\\d{2,}|zip)$", Pattern.CASE_INSENSITIVE);
 
     // Numbered split with alphanumeric extension prefix: name.win000, name.w01, name.tar001, etc.
     private static final Pattern PATTERN_ALPHANUM_SPLIT =
-            Pattern.compile("^(.*?)[.]([a-zA-Z]+)(\\d{2,})$", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("^(.+)[.]([a-zA-Z]+)(\\d{2,})$", Pattern.CASE_INSENSITIVE);
 
     // Chunk / Part split: name_part01.tar, name_01.tar, name-01.img, etc.
     private static final Pattern PATTERN_CHUNK_SPLIT =
