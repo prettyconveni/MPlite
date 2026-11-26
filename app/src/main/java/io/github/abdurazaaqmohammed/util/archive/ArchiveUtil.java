@@ -296,7 +296,7 @@ public class ArchiveUtil {
         // plain-Java fallback cannot read across parts; zip4j stays on for them.
         if (plan == ZipCharset.Plan.MIXED && password == null
                 && !SplitArchiveUtil.isZipSplit(archive)) {
-            ZipCompat.extractAll(target, destDir, preserveTime, token);
+            ZipCompat.extractAll(target, destDir, preserveTime, listener);
             return;
         }
         try (ZipFile zf = ZipCharset.apply(new ZipFile(target), plan)) {
@@ -333,7 +333,7 @@ public class ArchiveUtil {
             if (token != null && token.isCancelled()) throw new TransferCancelledException();
             if (TransferCancelledException.isCancellation(e)) throw new TransferCancelledException();
             if (password != null || isPasswordError(e)) throw e;
-            ZipCompat.extractAll(archive, destDir, preserveTime, token);
+            ZipCompat.extractAll(archive, destDir, preserveTime, listener);
         }
     }
 

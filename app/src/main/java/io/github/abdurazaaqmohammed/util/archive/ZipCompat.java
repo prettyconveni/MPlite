@@ -2,6 +2,7 @@ package io.github.abdurazaaqmohammed.util.archive;
 
 import io.github.abdurazaaqmohammed.util.archive.MpZstdInputStream;
 import io.github.abdurazaaqmohammed.util.archive.SplitArchiveUtil;
+import io.github.abdurazaaqmohammed.util.io.FileUtils;
 import io.github.abdurazaaqmohammed.util.io.TransferControl;
 
 import net.lingala.zip4j.ZipFile;
@@ -345,7 +346,7 @@ public final class ZipCompat {
      * Used as the fallback when zip4j cannot walk the archive at all.
      */
     public static void extractAll(File zip, File destDir, boolean preserveTime) throws IOException {
-        extractAll(zip, destDir, preserveTime, null);
+        extractAll(zip, destDir, preserveTime, null, null);
     }
 
     /**
@@ -358,6 +359,17 @@ public final class ZipCompat {
      */
     public static void extractAll(File zip, File destDir, boolean preserveTime,
                                   TransferControl control) throws IOException {
+        extractAll(zip, destDir, preserveTime, control, null);
+    }
+
+    public static void extractAll(File zip, File destDir, boolean preserveTime,
+                                  FileUtils.TransferListener listener) throws IOException {
+        extractAll(zip, destDir, preserveTime, listener != null ? listener.control() : null, listener);
+    }
+
+    private static void extractAll(File zip, File destDir, boolean preserveTime,
+                                   TransferControl control,
+                                   FileUtils.TransferListener listener) throws IOException {
         String canonicalRoot = destDir.getCanonicalPath();
         for (Entry e : readCentralDirectory(zip)) {
             if (control != null) control.checkpoint();
@@ -372,6 +384,7 @@ public final class ZipCompat {
                 out.mkdirs();
                 continue;
             }
+            if (listener != null) listener.onFile(zip, out);
             File parent = out.getParentFile();
             if (parent != null) //noinspection ResultOfMethodCallIgnored
                 parent.mkdirs();
@@ -383,6 +396,7 @@ public final class ZipCompat {
                 while ((n = in.read(buf)) != -1) {
                     if (control != null) control.checkpoint();
                     os.write(buf, 0, n);
+                    if (listener != null) listener.onBytes(n);
                 }
             } catch (IOException | RuntimeException ex) {
                 closeQuietly(raf);

@@ -92,9 +92,32 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
     private MaterialButton altBtn;
     private EditText cmdInput;
 
+    private static final String STATE_SCRIPT_STARTED = "mp_script_started";
+    private static final String STATE_SCRIPT_OUTPUT = "mp_script_output";
+
     private boolean isScriptMode = false;
     private boolean isRootSession = false;
+    private boolean scriptStarted = false;
     private float currentTextSizeSp = 11.5f;
+
+    @Override
+    protected void onThemeChanged() {
+        // Keep a running terminal/script session alive if theme or night mode notifies mid-run.
+    }
+
+    @Override
+    protected boolean themeAppliesSystemBars() {
+        return false;
+    }
+
+    @Override
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putBoolean(STATE_SCRIPT_STARTED, scriptStarted);
+        if (scriptOutputView != null) {
+            outState.putCharSequence(STATE_SCRIPT_OUTPUT, scriptOutputView.getText());
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -238,7 +261,15 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
         });
         ViewCompat.requestApplyInsets(insetTarget);
 
-        initTerminalSession();
+        if (isScriptMode && savedInstanceState != null && savedInstanceState.getBoolean(STATE_SCRIPT_STARTED, false)) {
+            scriptStarted = true;
+            if (scriptOutputView != null) {
+                CharSequence savedOutput = savedInstanceState.getCharSequence(STATE_SCRIPT_OUTPUT);
+                if (savedOutput != null) scriptOutputView.setText(savedOutput);
+            }
+        } else {
+            initTerminalSession();
+        }
     }
 
     private int applySafeInsets(View insetTarget, WindowInsetsCompat windowInsets) {
@@ -473,6 +504,8 @@ public class TerminalActivity extends BaseActivity implements TerminalSessionCli
     }
 
     private void initTerminalSession() {
+        if (terminalSession != null) return;
+        scriptStarted = true;
         Intent intent = getIntent();
         String initialCmd = intent != null ? intent.getStringExtra(EXTRA_INITIAL_COMMAND) : null;
         String scriptPath = intent != null ? intent.getStringExtra(EXTRA_SCRIPT_PATH) : null;

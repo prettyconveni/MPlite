@@ -55,6 +55,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.abdurazaaqmohammed.ui.main.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
@@ -1915,7 +1916,10 @@ public class FileOperationsHelper {
                         }
                     }
                     if (!needElevated) {
+                        ProgressManager pm = activeProgress;
+                        if (pm != null) pm.setFile(target);
                         ArchiveBrowseUtil.extractEntry(readableZip, entryPath, target);
+                        if (pm != null) pm.addBytes(target.length());
                         return;
                     }
                 } catch (IOException e) {
@@ -1931,7 +1935,10 @@ public class FileOperationsHelper {
                 File cacheDir = context.getCacheDir();
                 File tempFile = File.createTempFile("ext_", ".tmp", cacheDir);
                 try {
+                    ProgressManager pm = activeProgress;
+                    if (pm != null) pm.setFile(target);
                     ArchiveBrowseUtil.extractEntry(readableZip, entryPath, tempFile);
+                    if (pm != null) pm.addBytes(tempFile.length());
                     File parent = target.getParentFile();
                     if (parent != null) {
                         AccessManager.mkdir(context, parent.getAbsolutePath(), true);
@@ -2070,6 +2077,14 @@ public class FileOperationsHelper {
                     if (password == null) return;
                 }
                 destDir.mkdirs();
+                ProgressManager pm = new ProgressManager(context, false);
+                pm.showCount(true);
+                pm.setControllable(true);
+                pm.setOperation(R.string.op_extracting);
+                pm.setFile(archive);
+                pm.setPaths(archive, destDir);
+                pm.setText(context.rss.getString(R.string.extracting_to_folder, destDir.getName()));
+                pm.show();
                 // Root-only archives are unreadable to zip4j/tar readers:
                 // stage a copy into cache first (binary-safe). Staging happens
                 // before measuring so the totals describe the file we will
@@ -2081,19 +2096,34 @@ public class FileOperationsHelper {
                             context, archive.getAbsolutePath());
                     readable = staged;
                 }
-                ProgressManager pm = new ProgressManager(context, false);
-                pm.showCount(true);
-                pm.setControllable(true);
                 int totalEntries = archiveEntryCount(readable);
                 long totalBytes = archiveUncompressedSize(readable);
-                pm.setOperation(R.string.op_extracting);
-                pm.setFile(archive);
-                pm.setPaths(archive, destDir);
                 pm.setProgress(0, totalEntries);
                 pm.setBytes(0L, totalBytes);
-                pm.setText(context.rss.getString(R.string.extracting_to_folder, destDir.getName()));
-                pm.show();
-                FileUtils.TransferListener listener = pm.listener();
+                final AtomicInteger doneCount = new AtomicInteger(0);
+                final FileUtils.TransferListener baseListener = pm.listener();
+                FileUtils.TransferListener listener = new FileUtils.TransferListener() {
+                    @Override
+                    public void onFile(File source, File destination) {
+                        baseListener.onFile(source, destination);
+                        pm.setProgress(Math.min(doneCount.incrementAndGet(), totalEntries), totalEntries);
+                    }
+
+                    @Override
+                    public void onBytes(long count) {
+                        baseListener.onBytes(count);
+                    }
+
+                    @Override
+                    public void checkpoint() {
+                        baseListener.checkpoint();
+                    }
+
+                    @Override
+                    public TransferControl control() {
+                        return baseListener.control();
+                    }
+                };
                 try {
                     boolean keepTime = PreferenceManager.getDefaultSharedPreferences(context).getBoolean("preserve_mtime", true);
                     while (true) {
@@ -2110,7 +2140,9 @@ public class FileOperationsHelper {
                                 pm.dismiss();
                                 return;
                             }
-                            // A retry restarts the byte count from zero.
+                            // A retry restarts the byte & entry counts from zero.
+                            doneCount.set(0);
+                            pm.setProgress(0, totalEntries);
                             pm.setBytes(0L, totalBytes);
                         }
                     }
